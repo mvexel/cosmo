@@ -20,4 +20,5 @@ parquet = "52.2.0"
 rayon = "1.10"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.147"
+tempfile = "3.20"
 time = { version = "0.3.37", features = ["formatting"] }

@@ -9,7 +9,6 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -179,30 +178,25 @@ fn process_pbf(
     needs_nodes: bool,
 ) -> Result<u64> {
     if needs_nodes {
-        let (node_store_path, cleanup_cache) = match runtime.node_cache_mode {
+        // Create node store based on mode
+        let node_store = match runtime.node_cache_mode {
             NodeCacheMode::Mmap => {
-                let (path, cleanup) = resolve_node_cache_path(&cli.node_cache)?;
-                if cleanup {
-                    vprintln!(cli.verbose, "Using temporary node cache at {:?}...", path);
+                if let Some(ref path) = cli.node_cache {
+                    // User provided explicit path - no auto-cleanup
+                    vprintln!(cli.verbose, "Initializing node store at {:?}...", path);
+                    NodeStoreWriter::new_mmap(path, runtime.node_cache_max_nodes)
+                        .context("Failed to create mmap node store")?
+                } else {
+                    // Use temp file with auto-cleanup on drop (success, error, or panic)
+                    vprintln!(cli.verbose, "Using temporary node cache (auto-cleanup)...");
+                    NodeStoreWriter::new_mmap_temp(runtime.node_cache_max_nodes)
+                        .context("Failed to create temporary mmap node store")?
                 }
-                vprintln!(cli.verbose, "Initializing node store at {:?}...", path);
-                (Some(path), cleanup)
             }
             NodeCacheMode::Memory => {
                 vprintln!(cli.verbose, "Initializing in-memory node store...");
-                (None, false)
+                NodeStoreWriter::new_memory()
             }
-        };
-
-        let node_store = match runtime.node_cache_mode {
-            NodeCacheMode::Mmap => {
-                let path = node_store_path
-                    .as_ref()
-                    .context("Missing node cache path for mmap mode")?;
-                NodeStoreWriter::new_mmap(path, runtime.node_cache_max_nodes)
-                    .context("Failed to create mmap node store")?
-            }
-            NodeCacheMode::Memory => NodeStoreWriter::new_memory(),
         };
 
         vprintln!(
@@ -218,13 +212,7 @@ fn process_pbf(
         vprintln!(cli.verbose, "Pass 2: Processing elements...");
         let result = pass2_process(&cli.input, filters, runtime, node_store, sink)?;
 
-        if cleanup_cache {
-            if let Some(path) = node_store_path {
-                if let Err(err) = std::fs::remove_file(&path) {
-                    eprintln!("Failed to remove node cache {:?}: {}", path, err);
-                }
-            }
-        }
+        // Temp file (if any) is cleaned up when node_store is dropped
 
         Ok(result)
     } else {
@@ -299,22 +287,6 @@ fn parse_column_type(value: &str) -> Result<ColumnType> {
         "float" => Ok(ColumnType::Float),
         _ => Err(anyhow::anyhow!("unsupported column type: {}", value)),
     }
-}
-
-fn resolve_node_cache_path(node_cache: &Option<PathBuf>) -> Result<(PathBuf, bool)> {
-    if let Some(path) = node_cache {
-        return Ok((path.clone(), false));
-    }
-
-    let pid = std::process::id();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let filename = format!("cosmo_nodes_{pid}_{timestamp}.cache");
-    let path = std::env::temp_dir().join(filename);
-
-    Ok((path, true))
 }
 
 fn process_block_collect(
@@ -415,7 +387,9 @@ fn pass1_index_nodes(path: &Path, node_store: NodeStoreWriter) -> Result<(NodeSt
         for batch in rx {
             let batch_len = batch.len() as u64;
             for (id, lat, lon) in batch {
-                node_store.put(id, lat, lon)?;
+                node_store
+                    .put(id, lat, lon)
+                    .with_context(|| format!("failed writing node {}", id))?;
                 node_count += 1;
             }
             if batch_len > 0 {
@@ -461,13 +435,36 @@ fn pass1_index_nodes(path: &Path, node_store: NodeStoreWriter) -> Result<(NodeSt
         });
 
     drop(tx);
-    let writer_result = writer
-        .join()
-        .map_err(|_| anyhow!("node writer thread panicked"))??;
 
+    // Get writer thread result - it contains the root cause if there was an error
+    let writer_join = writer.join();
+
+    // Check writer thread first - it has the real error if the channel disconnected
+    let (node_store, node_count) = match writer_join {
+        Ok(Ok(result)) => result,
+        Ok(Err(writer_err)) => {
+            // Writer had an error - this is the root cause
+            return if decode_result.is_err() {
+                Err(writer_err.context("writer thread failed (caused channel disconnect)"))
+            } else {
+                Err(writer_err)
+            };
+        }
+        Err(panic_payload) => {
+            // Thread panicked - try to extract useful info
+            let panic_msg = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            return Err(anyhow!("node writer thread panicked: {}", panic_msg));
+        }
+    };
+
+    // Only check decode_result if writer succeeded
     decode_result?;
 
-    Ok(writer_result)
+    Ok((node_store, node_count))
 }
 
 fn pass2_process(
@@ -522,14 +519,37 @@ fn pass2_process(
         });
 
     drop(tx);
-    let writer_result = writer
-        .join()
-        .map_err(|_| anyhow!("sink writer thread panicked"))??;
 
+    // Get writer thread result - it contains the root cause if there was an error
+    let writer_join = writer.join();
+
+    // Check writer thread first - it has the real error if the channel disconnected
+    let match_count = match writer_join {
+        Ok(Ok(result)) => result,
+        Ok(Err(writer_err)) => {
+            // Writer had an error - this is the root cause
+            return if decode_result.is_err() {
+                Err(writer_err.context("sink writer thread failed (caused channel disconnect)"))
+            } else {
+                Err(writer_err)
+            };
+        }
+        Err(panic_payload) => {
+            // Thread panicked - try to extract useful info
+            let panic_msg = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            return Err(anyhow!("sink writer thread panicked: {}", panic_msg));
+        }
+    };
+
+    // Only check decode_result if writer succeeded
     decode_result?;
 
     progress.lock().unwrap().finish();
-    Ok(writer_result)
+    Ok(match_count)
 }
 
 fn pass_nodes_only(
@@ -583,14 +603,37 @@ fn pass_nodes_only(
         });
 
     drop(tx);
-    let writer_result = writer
-        .join()
-        .map_err(|_| anyhow!("sink writer thread panicked"))??;
 
+    // Get writer thread result - it contains the root cause if there was an error
+    let writer_join = writer.join();
+
+    // Check writer thread first - it has the real error if the channel disconnected
+    let match_count = match writer_join {
+        Ok(Ok(result)) => result,
+        Ok(Err(writer_err)) => {
+            // Writer had an error - this is the root cause
+            return if decode_result.is_err() {
+                Err(writer_err.context("sink writer thread failed (caused channel disconnect)"))
+            } else {
+                Err(writer_err)
+            };
+        }
+        Err(panic_payload) => {
+            // Thread panicked - try to extract useful info
+            let panic_msg = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            return Err(anyhow!("sink writer thread panicked: {}", panic_msg));
+        }
+    };
+
+    // Only check decode_result if writer succeeded
     decode_result?;
 
     progress.lock().unwrap().finish();
-    Ok(writer_result)
+    Ok(match_count)
 }
 
 fn matches_filter(filter: &FilterExpr, tags: &HashMap<String, String>) -> bool {

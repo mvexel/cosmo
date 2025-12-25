@@ -201,3 +201,333 @@ fn coerce_f64(value: Option<&ColumnValue>) -> Option<f64> {
         None => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use geo_types::{LineString, Point, Polygon};
+    use serde_json::Map;
+    use std::collections::HashMap;
+    use tempfile::NamedTempFile;
+
+    // ============================================
+    // Type coercion tests
+    // ============================================
+
+    #[test]
+    fn coerce_string_from_string() {
+        let value = ColumnValue::String("hello".to_string());
+        assert_eq!(coerce_string(Some(&value)), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn coerce_string_from_integer() {
+        let value = ColumnValue::Integer(42);
+        assert_eq!(coerce_string(Some(&value)), Some("42".to_string()));
+    }
+
+    #[test]
+    fn coerce_string_from_float() {
+        let value = ColumnValue::Float(3.14);
+        assert_eq!(coerce_string(Some(&value)), Some("3.14".to_string()));
+    }
+
+    #[test]
+    fn coerce_string_from_none() {
+        assert_eq!(coerce_string(None), None);
+    }
+
+    #[test]
+    fn coerce_i64_from_integer() {
+        let value = ColumnValue::Integer(42);
+        assert_eq!(coerce_i64(Some(&value)), Some(42));
+    }
+
+    #[test]
+    fn coerce_i64_from_float() {
+        let value = ColumnValue::Float(3.9);
+        assert_eq!(coerce_i64(Some(&value)), Some(3)); // truncates
+    }
+
+    #[test]
+    fn coerce_i64_from_valid_string() {
+        let value = ColumnValue::String("123".to_string());
+        assert_eq!(coerce_i64(Some(&value)), Some(123));
+    }
+
+    #[test]
+    fn coerce_i64_from_invalid_string() {
+        let value = ColumnValue::String("not a number".to_string());
+        assert_eq!(coerce_i64(Some(&value)), None);
+    }
+
+    #[test]
+    fn coerce_i64_from_none() {
+        assert_eq!(coerce_i64(None), None);
+    }
+
+    #[test]
+    fn coerce_f64_from_float() {
+        let value = ColumnValue::Float(3.14);
+        assert_eq!(coerce_f64(Some(&value)), Some(3.14));
+    }
+
+    #[test]
+    fn coerce_f64_from_integer() {
+        let value = ColumnValue::Integer(42);
+        assert_eq!(coerce_f64(Some(&value)), Some(42.0));
+    }
+
+    #[test]
+    fn coerce_f64_from_valid_string() {
+        let value = ColumnValue::String("3.14".to_string());
+        assert_eq!(coerce_f64(Some(&value)), Some(3.14));
+    }
+
+    #[test]
+    fn coerce_f64_from_invalid_string() {
+        let value = ColumnValue::String("not a number".to_string());
+        assert_eq!(coerce_f64(Some(&value)), None);
+    }
+
+    #[test]
+    fn coerce_f64_from_none() {
+        assert_eq!(coerce_f64(None), None);
+    }
+
+    #[test]
+    fn coerce_i64_from_negative_float() {
+        let value = ColumnValue::Float(-5.7);
+        assert_eq!(coerce_i64(Some(&value)), Some(-5));
+    }
+
+    #[test]
+    fn coerce_i64_from_large_integer() {
+        let value = ColumnValue::Integer(i64::MAX);
+        assert_eq!(coerce_i64(Some(&value)), Some(i64::MAX));
+    }
+
+    #[test]
+    fn coerce_string_from_negative_integer() {
+        let value = ColumnValue::Integer(-42);
+        assert_eq!(coerce_string(Some(&value)), Some("-42".to_string()));
+    }
+
+    #[test]
+    fn coerce_i64_from_string_with_whitespace() {
+        // String parsing doesn't trim whitespace
+        let value = ColumnValue::String(" 123 ".to_string());
+        assert_eq!(coerce_i64(Some(&value)), None);
+    }
+
+    // ============================================
+    // GeoParquetSink creation and basic operations
+    // ============================================
+
+    #[test]
+    fn creates_parquet_file_with_schema() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![
+            ColumnSpec {
+                name: "name".to_string(),
+                col_type: ColumnType::String,
+            },
+            ColumnSpec {
+                name: "population".to_string(),
+                col_type: ColumnType::Integer,
+            },
+        ];
+
+        let sink = GeoParquetSink::new(temp_file.path(), columns);
+        assert!(sink.is_ok());
+    }
+
+    #[test]
+    fn writes_point_feature() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![ColumnSpec {
+            name: "name".to_string(),
+            col_type: ColumnType::String,
+        }];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let point = Point::new(-0.1, 51.5);
+        let mut col_map = HashMap::new();
+        col_map.insert("name".to_string(), ColumnValue::String("London".to_string()));
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(point),
+            columns: col_map,
+            extras: Map::new(),
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+
+        // Verify file was created with content
+        let metadata = std::fs::metadata(temp_file.path()).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn writes_linestring_feature() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![ColumnSpec {
+            name: "highway".to_string(),
+            col_type: ColumnType::String,
+        }];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let line = LineString::from(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)]);
+        let mut col_map = HashMap::new();
+        col_map.insert(
+            "highway".to_string(),
+            ColumnValue::String("primary".to_string()),
+        );
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::LineString(line),
+            columns: col_map,
+            extras: Map::new(),
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+    }
+
+    #[test]
+    fn writes_polygon_feature() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![ColumnSpec {
+            name: "building".to_string(),
+            col_type: ColumnType::String,
+        }];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let polygon = Polygon::new(
+            LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+            vec![],
+        );
+        let mut col_map = HashMap::new();
+        col_map.insert(
+            "building".to_string(),
+            ColumnValue::String("yes".to_string()),
+        );
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Polygon(polygon),
+            columns: col_map,
+            extras: Map::new(),
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+    }
+
+    #[test]
+    fn handles_multiple_column_types() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![
+            ColumnSpec {
+                name: "name".to_string(),
+                col_type: ColumnType::String,
+            },
+            ColumnSpec {
+                name: "population".to_string(),
+                col_type: ColumnType::Integer,
+            },
+            ColumnSpec {
+                name: "area".to_string(),
+                col_type: ColumnType::Float,
+            },
+        ];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let point = Point::new(0.0, 0.0);
+        let mut col_map = HashMap::new();
+        col_map.insert("name".to_string(), ColumnValue::String("Test".to_string()));
+        col_map.insert("population".to_string(), ColumnValue::Integer(1000));
+        col_map.insert("area".to_string(), ColumnValue::Float(123.45));
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(point),
+            columns: col_map,
+            extras: Map::new(),
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+    }
+
+    #[test]
+    fn handles_missing_column_values() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![
+            ColumnSpec {
+                name: "name".to_string(),
+                col_type: ColumnType::String,
+            },
+            ColumnSpec {
+                name: "population".to_string(),
+                col_type: ColumnType::Integer,
+            },
+        ];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let point = Point::new(0.0, 0.0);
+        // Only provide "name", not "population"
+        let mut col_map = HashMap::new();
+        col_map.insert("name".to_string(), ColumnValue::String("Test".to_string()));
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(point),
+            columns: col_map,
+            extras: Map::new(),
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+    }
+
+    #[test]
+    fn writes_extras_as_json_properties() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+
+        let point = Point::new(0.0, 0.0);
+        let mut extras = Map::new();
+        extras.insert(
+            "custom_field".to_string(),
+            serde_json::Value::String("custom_value".to_string()),
+        );
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(point),
+            columns: HashMap::new(),
+            extras,
+        };
+
+        assert!(sink.add_feature(row).is_ok());
+        assert!(sink.finish().is_ok());
+    }
+
+    #[test]
+    fn handles_empty_file() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let columns = vec![ColumnSpec {
+            name: "name".to_string(),
+            col_type: ColumnType::String,
+        }];
+
+        let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
+        // Don't add any features
+        assert!(sink.finish().is_ok());
+    }
+}

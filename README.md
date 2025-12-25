@@ -121,13 +121,12 @@ The node cache is rebuilt on every run. By default, a temporary cache file is cr
 
 **Defaults:**
 - Mode: `mmap` (memory-mapped file). Can be changed to `memory` (RAM only) via `--node-cache-mode`.
-- Max Nodes: 11_000_000_000. Controlled by `--node-cache-max-nodes`. You should generally leave this alone. The size is determined by the highest node ID, not the number of nodes in your extract.
+- Max Nodes: 16_000_000_000. Controlled by `--node-cache-max-nodes`. You should generally leave this alone. The size is determined by the highest node ID, not the number of nodes in your extract.
 
 ### Sparse File Support
 
-When using `mmap` mode, the cache file is created as a **sparse file** with a virtual size of ~82 GiB (for 11B nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file will only consume disk space for the nodes actually present in your input PBF. So for the entire planet, the file **will** grow to 80ish GB.
-
-**Warning:** Some file systems (like FAT32) or network mounts (SMB/NFS) may not support sparse files and will attempt to allocate the full 82 GiB immediately. If you run out of disk space, use `--node-cache-mode memory` or a lower `--node-cache-max-nodes` if your extract has low node IDs.
+When using `mmap` mode, the cache file is created as a **sparse file** with a virtual size of ~90 GiB (for 16B nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file will only consume disk space for the nodes actually present in your input PBF. So for the entire planet, the file **will** grow to 90ish GB.
+**Warning:** Some file systems (like FAT32) or network mounts (SMB/NFS) may not support sparse files and will attempt to allocate the full 90 GiB immediately. If you run out of disk space, use `--node-cache-mode memory` or a lower `--node-cache-max-nodes` if your extract has low node IDs.
 
 ## Environment Variables
 
