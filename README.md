@@ -104,29 +104,58 @@ tables:
         type: "integer"
 ```
 
-Runtime flags for tweaking the node cache method / sparse file size:
+Runtime flags for tweaking the node cache method:
 
 ```bash
 cosmo --input <input.osm.pbf> \
   --output <output> \
   --format <geojson|geoparquet> \
   --filters <filters.yaml> \
-  --node-cache-mode <mmap|memory> \
+  --node-cache-mode <auto|sparse|dense|memory> \
   --node-cache-max-nodes <count>
 ```
 
 ## Node Cache
 
-The node cache is rebuilt on every run. By default, a temporary cache file is created and deleted after the run. You can override the path with `--node-cache`, but it is still rebuilt each time to avoid mixing node coordinates across extracts.
+The node cache stores node coordinates for resolving way geometries. It is rebuilt on every run. By default, a temporary cache file is created and deleted after the run. You can override the path with `--node-cache`, but it is still rebuilt each time to avoid mixing node coordinates across extracts.
 
-**Defaults:**
-- Mode: `mmap` (memory-mapped file). Can be changed to `memory` (RAM only) via `--node-cache-mode`.
-- Max Nodes: 16_000_000_000. Controlled by `--node-cache-max-nodes`. You should generally leave this alone. The size is determined by the highest node ID, not the number of nodes in your extract.
+### Cache Modes
 
-### Sparse File Support
+- **auto** (default): Automatically selects `sparse` or `dense` based on input file size.
+- **sparse**: Sorted array with binary search. Memory-efficient for extracts.
+- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent.
+- **memory**: In-memory HashMap. No disk usage, but high RAM consumption.
 
-When using `mmap` mode, the cache file is created as a **sparse file** with a virtual size of ~90 GiB (for 16B nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file will only consume disk space for the nodes actually present in your input PBF. So for the entire planet, the file **will** grow to 90ish GB.
-**Warning:** Some file systems (like FAT32) or network mounts (SMB/NFS) may not support sparse files and will attempt to allocate the full 90 GiB immediately. If you run out of disk space, use `--node-cache-mode memory` or a lower `--node-cache-max-nodes` if your extract has low node IDs.
+### Auto-Selection
+
+By default (`--node-cache-mode auto`), the mode is selected based on input file size:
+
+| Input Size | Selected Mode | Rationale |
+|------------|---------------|-----------|
+| < 5 GB     | sparse        | City/country extracts have low node density |
+| ≥ 5 GB     | dense         | Continent/planet files have high node density |
+
+The output tells you what was selected:
+```
+Node cache: sparse (auto-selected for 1.2 GB input)
+```
+
+### Why This Matters
+
+OSM node IDs are globally assigned (~13 billion max). Even a small city extract references IDs scattered across this range:
+
+| Mode | Storage | Lookup |
+|------|---------|--------|
+| **dense** | 8 bytes × max_node_id (~98 GB for planet) | O(1) direct indexing |
+| **sparse** | 16 bytes × actual_nodes | O(log n) binary search |
+
+For a US extract (1.49B nodes, 11% density), sparse uses ~22 GB vs dense's ~98 GB sparse file.
+
+### Dense Mode and Sparse Files
+
+When using `dense` mode, the cache file is created as a **sparse file** with a virtual size of ~128 GiB (for 16B max nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file only consumes disk space for nodes actually present. For planet files, it will grow to ~90 GB.
+
+**Warning:** Some file systems (FAT32) or network mounts (SMB/NFS) may not support sparse files and will attempt to allocate the full size immediately. Use `--node-cache-mode sparse` or `memory` in these cases.
 
 ## Environment Variables
 

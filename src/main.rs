@@ -28,6 +28,42 @@ use storage::{NodeStoreReader, NodeStoreWriter};
 
 type SinkHandle = Arc<Mutex<Box<dyn DataSink + Send>>>;
 
+/// Threshold for auto-selecting between sparse and dense node cache modes.
+/// Based on osmium documentation: files >= 5GB are typically continent/planet scale.
+const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+
+/// Resolve Auto mode to a concrete mode based on input file size.
+/// Returns the resolved mode and a description for logging.
+fn resolve_node_cache_mode(
+    requested: NodeCacheMode,
+    input_path: &Path,
+) -> (NodeCacheMode, String) {
+    match requested {
+        NodeCacheMode::Auto => {
+            let file_size = std::fs::metadata(input_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let size_gb = file_size as f64 / (1024.0 * 1024.0 * 1024.0);
+
+            if file_size >= DENSE_THRESHOLD_BYTES {
+                (
+                    NodeCacheMode::Dense,
+                    format!("dense (auto-selected for {:.1} GB input)", size_gb),
+                )
+            } else {
+                (
+                    NodeCacheMode::Sparse,
+                    format!("sparse (auto-selected for {:.1} GB input)", size_gb),
+                )
+            }
+        }
+        NodeCacheMode::Sparse => (NodeCacheMode::Sparse, "sparse".to_string()),
+        NodeCacheMode::Dense => (NodeCacheMode::Dense, "dense".to_string()),
+        NodeCacheMode::Memory => (NodeCacheMode::Memory, "memory".to_string()),
+    }
+}
+
 macro_rules! vprintln {
     ($verbose:expr, $($arg:tt)*) => {
         if $verbose {
@@ -96,7 +132,7 @@ struct Cli {
     #[arg(long, env = "COSMO_NODE_CACHE")]
     node_cache: Option<PathBuf>,
 
-    /// Node cache mode override (mmap or memory)
+    /// Node cache mode: auto (default), sparse, dense, or memory
     #[arg(long, env = "COSMO_NODE_CACHE_MODE")]
     node_cache_mode: Option<NodeCacheMode>,
 
@@ -178,24 +214,44 @@ fn process_pbf(
     needs_nodes: bool,
 ) -> Result<u64> {
     if needs_nodes {
-        // Create node store based on mode
-        let node_store = match runtime.node_cache_mode {
-            NodeCacheMode::Mmap => {
+        // Resolve auto mode to concrete mode based on input file size
+        let (resolved_mode, mode_desc) =
+            resolve_node_cache_mode(runtime.node_cache_mode, &cli.input);
+
+        // Create node store based on resolved mode
+        let node_store = match resolved_mode {
+            NodeCacheMode::Sparse => {
+                eprintln!("Node cache: {}", mode_desc);
+                NodeStoreWriter::new_sparse()
+            }
+            NodeCacheMode::Dense => {
                 if let Some(ref path) = cli.node_cache {
                     // User provided explicit path - no auto-cleanup
-                    vprintln!(cli.verbose, "Initializing node store at {:?}...", path);
-                    NodeStoreWriter::new_mmap(path, runtime.node_cache_max_nodes)
-                        .context("Failed to create mmap node store")?
+                    eprintln!(
+                        "Node cache: {} at {:?} (max {} nodes)",
+                        mode_desc,
+                        path,
+                        runtime.node_cache_max_nodes
+                    );
+                    NodeStoreWriter::new_dense(path, runtime.node_cache_max_nodes)
+                        .context("Failed to create dense node store")?
                 } else {
-                    // Use temp file with auto-cleanup on drop (success, error, or panic)
-                    vprintln!(cli.verbose, "Using temporary node cache (auto-cleanup)...");
-                    NodeStoreWriter::new_mmap_temp(runtime.node_cache_max_nodes)
-                        .context("Failed to create temporary mmap node store")?
+                    // Use temp file with auto-cleanup on drop
+                    eprintln!(
+                        "Node cache: {} (temp file, max {} nodes)",
+                        mode_desc,
+                        runtime.node_cache_max_nodes
+                    );
+                    NodeStoreWriter::new_dense_temp(runtime.node_cache_max_nodes)
+                        .context("Failed to create temporary dense node store")?
                 }
             }
             NodeCacheMode::Memory => {
-                vprintln!(cli.verbose, "Initializing in-memory node store...");
+                eprintln!("Node cache: {}", mode_desc);
                 NodeStoreWriter::new_memory()
+            }
+            NodeCacheMode::Auto => {
+                unreachable!("Auto mode should have been resolved")
             }
         };
 

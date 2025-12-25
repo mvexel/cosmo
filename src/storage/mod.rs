@@ -19,23 +19,35 @@ pub struct NodeStoreReader {
 }
 
 enum NodeStoreWriterImpl {
-    Mmap(MmapNodeStoreWriter),
+    Sparse(SparseNodeStoreWriter),
+    Dense(DenseNodeStoreWriter),
     Memory(MemoryNodeStore),
 }
 
 enum NodeStoreReaderImpl {
-    Mmap(MmapNodeStoreReader),
+    Sparse(SparseNodeStoreReader),
+    Dense(DenseNodeStoreReader),
     Memory(MemoryNodeStore),
 }
 
-struct MmapNodeStoreWriter {
+struct SparseNodeStoreWriter {
+    /// Entries stored as (node_id, packed_coords) - appended in order
+    entries: Vec<(u64, i64)>,
+}
+
+struct SparseNodeStoreReader {
+    /// Sorted by node_id for binary search
+    entries: Vec<(u64, i64)>,
+}
+
+struct DenseNodeStoreWriter {
     mmap: MmapMut,
     max_nodes: u64,
     /// If Some, file is automatically deleted when this struct is dropped
     _temp_file: Option<NamedTempFile>,
 }
 
-struct MmapNodeStoreReader {
+struct DenseNodeStoreReader {
     mmap: Mmap,
     max_nodes: u64,
     /// If Some, file is automatically deleted when this struct is dropped
@@ -48,9 +60,18 @@ struct MemoryNodeStore {
 }
 
 impl NodeStoreWriter {
-    /// Create a node store backed by a memory-mapped file at the given path.
+    /// Create a sparse node store (sorted array, efficient for extracts).
+    pub fn new_sparse() -> Self {
+        Self {
+            inner: NodeStoreWriterImpl::Sparse(SparseNodeStoreWriter {
+                entries: Vec::new(),
+            }),
+        }
+    }
+
+    /// Create a dense node store backed by a memory-mapped file at the given path.
     /// The file is NOT automatically deleted - caller is responsible for cleanup.
-    pub fn new_mmap<P: AsRef<Path>>(path: P, max_nodes: u64) -> Result<Self> {
+    pub fn new_dense<P: AsRef<Path>>(path: P, max_nodes: u64) -> Result<Self> {
         let path = path.as_ref();
 
         // Open or create the file
@@ -68,18 +89,11 @@ impl NodeStoreWriter {
         file.set_len(file_size)
             .context("Failed to set node store file length")?;
 
-        eprintln!(
-            "Node cache: mmap at {:?} (max {} nodes, {} GB sparse file)",
-            path,
-            max_nodes,
-            file_size / (1024 * 1024 * 1024)
-        );
-
         // Map the file
         let mmap = unsafe { MmapMut::map_mut(&file).context("Failed to map node store file")? };
 
         Ok(Self {
-            inner: NodeStoreWriterImpl::Mmap(MmapNodeStoreWriter {
+            inner: NodeStoreWriterImpl::Dense(DenseNodeStoreWriter {
                 mmap,
                 max_nodes,
                 _temp_file: None,
@@ -87,9 +101,9 @@ impl NodeStoreWriter {
         })
     }
 
-    /// Create a node store backed by a temporary memory-mapped file.
+    /// Create a dense node store backed by a temporary memory-mapped file.
     /// The file is automatically deleted when this store (and its reader) are dropped.
-    pub fn new_mmap_temp(max_nodes: u64) -> Result<Self> {
+    pub fn new_dense_temp(max_nodes: u64) -> Result<Self> {
         // Create temp file
         let temp_file = NamedTempFile::new().context("Failed to create temporary node cache file")?;
 
@@ -102,20 +116,13 @@ impl NodeStoreWriter {
             .set_len(file_size)
             .context("Failed to set node store file length")?;
 
-        eprintln!(
-            "Node cache: mmap at {:?} (max {} nodes, {} GB sparse file, auto-cleanup)",
-            temp_file.path(),
-            max_nodes,
-            file_size / (1024 * 1024 * 1024)
-        );
-
         // Map the file
         let mmap = unsafe {
             MmapMut::map_mut(temp_file.as_file()).context("Failed to map node store file")?
         };
 
         Ok(Self {
-            inner: NodeStoreWriterImpl::Mmap(MmapNodeStoreWriter {
+            inner: NodeStoreWriterImpl::Dense(DenseNodeStoreWriter {
                 mmap,
                 max_nodes,
                 _temp_file: Some(temp_file),
@@ -133,14 +140,16 @@ impl NodeStoreWriter {
 
     pub fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
         match &mut self.inner {
-            NodeStoreWriterImpl::Mmap(store) => store.put(id, lat, lon),
+            NodeStoreWriterImpl::Sparse(store) => store.put(id, lat, lon),
+            NodeStoreWriterImpl::Dense(store) => store.put(id, lat, lon),
             NodeStoreWriterImpl::Memory(store) => store.put(id, lat, lon),
         }
     }
 
     pub fn finalize(self) -> Result<NodeStoreReader> {
         match self.inner {
-            NodeStoreWriterImpl::Mmap(store) => store.finalize(),
+            NodeStoreWriterImpl::Sparse(store) => store.finalize(),
+            NodeStoreWriterImpl::Dense(store) => store.finalize(),
             NodeStoreWriterImpl::Memory(store) => Ok(NodeStoreReader {
                 inner: NodeStoreReaderImpl::Memory(store),
             }),
@@ -151,13 +160,62 @@ impl NodeStoreWriter {
 impl NodeStoreReader {
     pub fn get(&self, id: u64) -> Option<(f64, f64)> {
         match &self.inner {
-            NodeStoreReaderImpl::Mmap(store) => store.get(id),
+            NodeStoreReaderImpl::Sparse(store) => store.get(id),
+            NodeStoreReaderImpl::Dense(store) => store.get(id),
             NodeStoreReaderImpl::Memory(store) => store.get(id),
         }
     }
 }
 
-impl MmapNodeStoreWriter {
+/// Pack lat/lon into a single i64 for sparse storage
+fn pack_coords(lat: f64, lon: f64) -> i64 {
+    let lat_fixed = (lat * SCALE_FACTOR) as i32;
+    let lon_fixed = (lon * SCALE_FACTOR) as i32;
+    ((lon_fixed as i64) << 32) | ((lat_fixed as i64) & 0xFFFFFFFF)
+}
+
+/// Unpack i64 back to (lon, lat)
+fn unpack_coords(packed: i64) -> (f64, f64) {
+    let lon_fixed = (packed >> 32) as i32;
+    let lat_fixed = packed as i32;
+    (
+        lon_fixed as f64 / SCALE_FACTOR,
+        lat_fixed as f64 / SCALE_FACTOR,
+    )
+}
+
+impl SparseNodeStoreWriter {
+    fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
+        let packed = pack_coords(lat, lon);
+        self.entries.push((id, packed));
+        Ok(())
+    }
+
+    fn finalize(mut self) -> Result<NodeStoreReader> {
+        // OSM data is pre-sorted, but verify and sort if needed
+        let is_sorted = self.entries.windows(2).all(|w| w[0].0 <= w[1].0);
+        if !is_sorted {
+            self.entries.sort_by_key(|(id, _)| *id);
+        }
+
+        Ok(NodeStoreReader {
+            inner: NodeStoreReaderImpl::Sparse(SparseNodeStoreReader {
+                entries: self.entries,
+            }),
+        })
+    }
+}
+
+impl SparseNodeStoreReader {
+    fn get(&self, id: u64) -> Option<(f64, f64)> {
+        self.entries
+            .binary_search_by_key(&id, |(node_id, _)| *node_id)
+            .ok()
+            .map(|idx| unpack_coords(self.entries[idx].1))
+    }
+}
+
+impl DenseNodeStoreWriter {
     fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
         if id >= self.max_nodes {
             return Err(anyhow!(
@@ -184,7 +242,7 @@ impl MmapNodeStoreWriter {
             .make_read_only()
             .context("Failed to set node store to read-only")?;
         Ok(NodeStoreReader {
-            inner: NodeStoreReaderImpl::Mmap(MmapNodeStoreReader {
+            inner: NodeStoreReaderImpl::Dense(DenseNodeStoreReader {
                 mmap,
                 max_nodes: self.max_nodes,
                 _temp_file: self._temp_file, // Pass ownership for cleanup on drop
@@ -193,7 +251,7 @@ impl MmapNodeStoreWriter {
     }
 }
 
-impl MmapNodeStoreReader {
+impl DenseNodeStoreReader {
     fn get(&self, id: u64) -> Option<(f64, f64)> {
         if id >= self.max_nodes {
             return None;
@@ -377,12 +435,12 @@ mod tests {
     }
 
     // ============================================
-    // Mmap node store tests
+    // Sparse node store tests
     // ============================================
 
     #[test]
-    fn mmap_temp_store_put_and_get() {
-        let mut writer = NodeStoreWriter::new_mmap_temp(1000).unwrap();
+    fn sparse_store_put_and_get() {
+        let mut writer = NodeStoreWriter::new_sparse();
         writer.put(1, 51.5, -0.1).unwrap();
         writer.put(2, 40.7, -74.0).unwrap();
 
@@ -398,8 +456,67 @@ mod tests {
     }
 
     #[test]
-    fn mmap_store_errors_on_node_id_exceeding_max() {
-        let mut writer = NodeStoreWriter::new_mmap_temp(100).unwrap();
+    fn sparse_store_returns_none_for_missing_node() {
+        let writer = NodeStoreWriter::new_sparse();
+        let reader = writer.finalize().unwrap();
+
+        assert!(reader.get(999).is_none());
+    }
+
+    #[test]
+    fn sparse_store_handles_unsorted_input() {
+        let mut writer = NodeStoreWriter::new_sparse();
+        // Insert out of order
+        writer.put(5, 51.5, -0.1).unwrap();
+        writer.put(1, 40.7, -74.0).unwrap();
+        writer.put(3, 35.6, 139.6).unwrap();
+
+        let reader = writer.finalize().unwrap();
+
+        // Should still find all nodes via binary search
+        assert!(reader.get(1).is_some());
+        assert!(reader.get(3).is_some());
+        assert!(reader.get(5).is_some());
+        assert!(reader.get(2).is_none());
+    }
+
+    #[test]
+    fn sparse_store_handles_large_node_ids() {
+        let mut writer = NodeStoreWriter::new_sparse();
+        let large_id = 13_000_000_000u64; // Typical max OSM node ID
+        writer.put(large_id, 51.5, -0.1).unwrap();
+
+        let reader = writer.finalize().unwrap();
+
+        let (lon, lat) = reader.get(large_id).unwrap();
+        assert!((lat - 51.5).abs() < 1e-7);
+        assert!((lon - (-0.1)).abs() < 1e-7);
+    }
+
+    // ============================================
+    // Dense (mmap) node store tests
+    // ============================================
+
+    #[test]
+    fn dense_temp_store_put_and_get() {
+        let mut writer = NodeStoreWriter::new_dense_temp(1000).unwrap();
+        writer.put(1, 51.5, -0.1).unwrap();
+        writer.put(2, 40.7, -74.0).unwrap();
+
+        let reader = writer.finalize().unwrap();
+
+        let (lon, lat) = reader.get(1).unwrap();
+        assert!((lat - 51.5).abs() < 1e-7);
+        assert!((lon - (-0.1)).abs() < 1e-7);
+
+        let (lon, lat) = reader.get(2).unwrap();
+        assert!((lat - 40.7).abs() < 1e-7);
+        assert!((lon - (-74.0)).abs() < 1e-7);
+    }
+
+    #[test]
+    fn dense_store_errors_on_node_id_exceeding_max() {
+        let mut writer = NodeStoreWriter::new_dense_temp(100).unwrap();
 
         // Node ID within bounds should succeed
         assert!(writer.put(99, 51.5, -0.1).is_ok());
@@ -411,8 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn mmap_store_returns_none_for_out_of_bounds() {
-        let writer = NodeStoreWriter::new_mmap_temp(100).unwrap();
+    fn dense_store_returns_none_for_out_of_bounds() {
+        let writer = NodeStoreWriter::new_dense_temp(100).unwrap();
         let reader = writer.finalize().unwrap();
 
         assert!(reader.get(100).is_none());
@@ -420,8 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn mmap_store_returns_zero_for_unwritten_nodes() {
-        let writer = NodeStoreWriter::new_mmap_temp(100).unwrap();
+    fn dense_store_returns_zero_for_unwritten_nodes() {
+        let writer = NodeStoreWriter::new_dense_temp(100).unwrap();
         let reader = writer.finalize().unwrap();
 
         // Unwritten node returns (0.0, 0.0) - this is sparse file behavior
@@ -431,11 +548,46 @@ mod tests {
     }
 
     // ============================================
-    // Memory vs Mmap equivalence tests
+    // Pack/unpack coords tests
     // ============================================
 
     #[test]
-    fn memory_and_mmap_produce_same_results() {
+    fn pack_unpack_roundtrip() {
+        let test_cases = vec![
+            (51.5073509, -0.1277583),
+            (40.7127753, -74.0059728),
+            (35.6761919, 139.6503106),
+            (-33.8688197, 151.2092955),
+            (0.0, 0.0),
+            (90.0, 180.0),
+            (-90.0, -180.0),
+        ];
+
+        for (lat, lon) in test_cases {
+            let packed = pack_coords(lat, lon);
+            let (unpacked_lon, unpacked_lat) = unpack_coords(packed);
+
+            assert!(
+                (lat - unpacked_lat).abs() < 1e-7,
+                "lat mismatch: {} vs {}",
+                lat,
+                unpacked_lat
+            );
+            assert!(
+                (lon - unpacked_lon).abs() < 1e-7,
+                "lon mismatch: {} vs {}",
+                lon,
+                unpacked_lon
+            );
+        }
+    }
+
+    // ============================================
+    // All stores equivalence tests
+    // ============================================
+
+    #[test]
+    fn all_stores_produce_same_results() {
         let test_coords = vec![
             (1u64, 51.5073509, -0.1277583),
             (2, 40.7127753, -74.0059728),
@@ -450,25 +602,41 @@ mod tests {
         }
         let mem_reader = mem_writer.finalize().unwrap();
 
-        // Mmap store
-        let mut mmap_writer = NodeStoreWriter::new_mmap_temp(1000).unwrap();
+        // Sparse store
+        let mut sparse_writer = NodeStoreWriter::new_sparse();
         for (id, lat, lon) in &test_coords {
-            mmap_writer.put(*id, *lat, *lon).unwrap();
+            sparse_writer.put(*id, *lat, *lon).unwrap();
         }
-        let mmap_reader = mmap_writer.finalize().unwrap();
+        let sparse_reader = sparse_writer.finalize().unwrap();
+
+        // Dense store
+        let mut dense_writer = NodeStoreWriter::new_dense_temp(1000).unwrap();
+        for (id, lat, lon) in &test_coords {
+            dense_writer.put(*id, *lat, *lon).unwrap();
+        }
+        let dense_reader = dense_writer.finalize().unwrap();
 
         // Compare results
         for (id, _, _) in &test_coords {
             let mem_result = mem_reader.get(*id).unwrap();
-            let mmap_result = mmap_reader.get(*id).unwrap();
+            let sparse_result = sparse_reader.get(*id).unwrap();
+            let dense_result = dense_reader.get(*id).unwrap();
 
             assert!(
-                (mem_result.0 - mmap_result.0).abs() < 1e-10,
-                "lon mismatch for node {id}"
+                (mem_result.0 - sparse_result.0).abs() < 1e-10,
+                "lon mismatch between memory and sparse for node {id}"
             );
             assert!(
-                (mem_result.1 - mmap_result.1).abs() < 1e-10,
-                "lat mismatch for node {id}"
+                (mem_result.1 - sparse_result.1).abs() < 1e-10,
+                "lat mismatch between memory and sparse for node {id}"
+            );
+            assert!(
+                (mem_result.0 - dense_result.0).abs() < 1e-10,
+                "lon mismatch between memory and dense for node {id}"
+            );
+            assert!(
+                (mem_result.1 - dense_result.1).abs() < 1e-10,
+                "lat mismatch between memory and dense for node {id}"
             );
         }
     }

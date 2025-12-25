@@ -30,7 +30,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            node_cache_mode: NodeCacheMode::Mmap,
+            node_cache_mode: NodeCacheMode::Auto,
             // OSM has ~10.3B nodes as of 2024; use generous headroom to skip prepass scan
             node_cache_max_nodes: 16_000_000_000,
             all_tags: false,
@@ -38,10 +38,16 @@ impl Default for RuntimeConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeCacheMode {
-    Mmap,
+    /// Automatically select based on input file size (default)
+    Auto,
+    /// Sorted array - memory-efficient for extracts (<5GB)
+    Sparse,
+    /// Direct ID indexing - best for planet/continent (≥5GB)
+    Dense,
+    /// In-memory HashMap (no disk usage)
     Memory,
 }
 
@@ -50,7 +56,9 @@ impl FromStr for NodeCacheMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "mmap" => Ok(NodeCacheMode::Mmap),
+            "auto" => Ok(NodeCacheMode::Auto),
+            "sparse" => Ok(NodeCacheMode::Sparse),
+            "dense" | "mmap" => Ok(NodeCacheMode::Dense), // mmap kept for backwards compatibility
             "memory" => Ok(NodeCacheMode::Memory),
             _ => Err(format!("invalid node_cache_mode: {value}")),
         }
@@ -187,18 +195,43 @@ mod tests {
     // ============================================
 
     #[test]
-    fn node_cache_mode_parses_mmap() {
+    fn node_cache_mode_parses_auto() {
+        assert!(matches!(
+            NodeCacheMode::from_str("auto"),
+            Ok(NodeCacheMode::Auto)
+        ));
+        assert!(matches!(
+            NodeCacheMode::from_str("AUTO"),
+            Ok(NodeCacheMode::Auto)
+        ));
+    }
+
+    #[test]
+    fn node_cache_mode_parses_sparse() {
+        assert!(matches!(
+            NodeCacheMode::from_str("sparse"),
+            Ok(NodeCacheMode::Sparse)
+        ));
+        assert!(matches!(
+            NodeCacheMode::from_str("SPARSE"),
+            Ok(NodeCacheMode::Sparse)
+        ));
+    }
+
+    #[test]
+    fn node_cache_mode_parses_dense() {
+        assert!(matches!(
+            NodeCacheMode::from_str("dense"),
+            Ok(NodeCacheMode::Dense)
+        ));
+        assert!(matches!(
+            NodeCacheMode::from_str("DENSE"),
+            Ok(NodeCacheMode::Dense)
+        ));
+        // Backwards compatibility: mmap maps to dense
         assert!(matches!(
             NodeCacheMode::from_str("mmap"),
-            Ok(NodeCacheMode::Mmap)
-        ));
-        assert!(matches!(
-            NodeCacheMode::from_str("MMAP"),
-            Ok(NodeCacheMode::Mmap)
-        ));
-        assert!(matches!(
-            NodeCacheMode::from_str("Mmap"),
-            Ok(NodeCacheMode::Mmap)
+            Ok(NodeCacheMode::Dense)
         ));
     }
 
@@ -210,10 +243,6 @@ mod tests {
         ));
         assert!(matches!(
             NodeCacheMode::from_str("MEMORY"),
-            Ok(NodeCacheMode::Memory)
-        ));
-        assert!(matches!(
-            NodeCacheMode::from_str("Memory"),
             Ok(NodeCacheMode::Memory)
         ));
     }
@@ -232,7 +261,7 @@ mod tests {
     #[test]
     fn runtime_config_defaults() {
         let config = RuntimeConfig::default();
-        assert!(matches!(config.node_cache_mode, NodeCacheMode::Mmap));
+        assert!(matches!(config.node_cache_mode, NodeCacheMode::Auto));
         assert_eq!(config.node_cache_max_nodes, 16_000_000_000);
         assert!(!config.all_tags);
     }
