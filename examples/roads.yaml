@@ -1,0 +1,48 @@
+tables:
+  roads:
+    filter:
+      any:
+        - tag: "highway"
+          values: 
+            - "motorway"
+            - "trunk"
+            - "primary"
+            - "secondary"
+            - "tertiary"
+            - "*_link"
+    geometry:
+      way: "linestring"
+      closed_way: "linestring" # or polygon/centroid
+      node: false # or true
+      relation: false
+    columns:
+      - name: "name"
+        source: "tag:name"
+        type: "string"
+      - name: "ref"
+        source: "tag:ref"
+        type: "string"
+      - name: "lanes"
+        source: "tag:lanes"
+        type: "integer"
+      - name: "maxspeed"
+        source: "tag:maxspeed"
+        type: "string"
+      - name: "highway_type"
+        source: "tag:highway"
+        type: "string"
+      - name: "oneway"
+        source: "tag:oneway"
+        type: "string"
+      - name: "user_name"
+        source: "meta:user"
+        type: "string"
+      - name: "user_id"
+        source: "meta:uid"
+        type: "integer"
+      - name: "version"
+        source: "meta:version"
+        type: "integer"
+      - name: "edited_at"
+        source: "meta:timestamp"
+        type: "string" 

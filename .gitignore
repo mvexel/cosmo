@@ -1,0 +1,8 @@
+/target
+osm-pbf-parquet/
+*.cache
+*.sqlite
+*.geojson
+*.*parquet
+.DS_Store
+_agents/

@@ -1,0 +1,23 @@
+[package]
+name = "cosmo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+arrow-array = "52.2.0"
+arrow-schema = "52.2.0"
+clap = { version = "4.5.53", features = ["derive", "env"] }
+config = { version = "0.14.1", features = ["yaml"] }
+crossbeam-channel = "0.5.15"
+geo = "0.28.0"
+geo-types = "0.7.18"
+geojson = "0.24.2"
+geozero = { version = "0.15.1", features = ["with-geo", "with-wkb"] }
+memmap2 = "0.9.9"
+osmpbf = { version = "0.3.*", git = "https://github.com/brad-richardson/osmpbf.git", branch = "async-blob-reader" }
+parquet = "52.2.0"
+rayon = "1.10"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.147"
+time = { version = "0.3.37", features = ["formatting"] }
