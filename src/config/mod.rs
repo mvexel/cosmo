@@ -31,7 +31,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             node_cache_mode: NodeCacheMode::Auto,
-            // OSM has ~10.3B nodes as of 2024; use generous headroom to skip prepass scan
+            // OSM has ~10.3B nodes as of 2025; use generous headroom to skip prepass scan
             node_cache_max_nodes: 16_000_000_000,
             all_tags: false,
         }

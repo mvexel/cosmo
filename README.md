@@ -148,16 +148,11 @@ The node cache stores node coordinates for resolving way geometries. It is rebui
 - **auto** (default): Automatically selects `sparse` or `dense` based on input file size.
 - **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts. Uses sequential indexing to preserve sort order; requires sorted input (use `osmium sort` if needed).
 - **dense**: Memory-mapped file indexed by node ID. Best for planet/continent. Uses parallel indexing for maximum speed.
-- **memory**: In-memory HashMap. No disk usage, but high RAM consumption.
+- **memory**: In-memory HashMap. No disk usage, but high RAM consumption. If you have a lot of RAM, you may be able to process the planet like this? (would be cool. I only have 16GB. Let me know.)
 
 ### Auto-Selection
 
-By default (`--node-cache-mode auto`), the mode is selected based on input file size:
-
-| Input Size | Selected Mode | Rationale |
-|------------|---------------|-----------|
-| < 5 GB     | sparse        | City/country extracts have low node density |
-| ≥ 5 GB     | dense         | Continent/planet files have high node density |
+By default (`--node-cache-mode auto`), the mode is selected based on input file size. For PBF files smaller than 5GB, `sparse` is selected. For larger files, `dense` is selected. You can override this with `--node-cache-mode`.
 
 The output tells you what was selected:
 ```
