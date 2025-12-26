@@ -39,7 +39,7 @@ pub struct Cli {
     #[arg(long)]
     pub node_cache: Option<PathBuf>,
 
-    /// Maximum nodes for dense cache (default: 1B)
+    /// Maximum nodes for dense cache (default: 16B)
     #[arg(long)]
     pub node_cache_max_nodes: Option<u64>,
 
@@ -52,7 +52,7 @@ pub struct Cli {
     pub verbose: bool,
 
     /// Output format (auto-detected if omitted)
-    #[arg(short, long, value_enum)]
+    #[arg(long, value_enum)]
     pub format: Option<OutputFormat>,
 
     /// Include all tags in a 'tags' JSON column
@@ -62,14 +62,15 @@ pub struct Cli {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 pub enum OutputFormat {
+    #[value(name = "geojson")]
     GeoJson,
+    #[value(name = "geojsonl")]
     GeoJsonl,
+    #[value(name = "geoparquet", alias = "parquet")]
     GeoParquet,
 }
 
 pub type SinkHandle = Arc<Mutex<Box<dyn DataSink + Send>>>;
-
-const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
 
 pub fn resolve_node_cache_mode(
     requested: NodeCacheMode,
@@ -80,7 +81,8 @@ pub fn resolve_node_cache_mode(
             let file_size = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
             let size_gb = file_size as f64 / (1024.0 * 1024.0 * 1024.0);
 
-            if file_size >= DENSE_THRESHOLD_BYTES {
+            let dense_threshold = crate::config::DENSE_THRESHOLD_BYTES;
+            if file_size >= dense_threshold {
                 (
                     NodeCacheMode::Dense,
                     format!("dense (auto-selected for {:.1} GB input)", size_gb),
