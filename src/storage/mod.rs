@@ -69,8 +69,8 @@ struct MemoryNodeStore {
 impl NodeStoreWriter {
     /// Create a sparse node store (sorted array, efficient for extracts).
     pub fn new_sparse() -> Result<Self> {
-        let temp_file =
-            NamedTempFile::new().context("Failed to create temporary sparse node cache file")?;
+        let temp_file = NamedTempFile::new()
+            .context("NodeStore: Failed to create temporary sparse cache file")?;
         Ok(Self {
             inner: NodeStoreWriterImpl::Sparse(SparseNodeStoreWriter {
                 writer: BufWriter::new(temp_file),
@@ -93,17 +93,23 @@ impl NodeStoreWriter {
             .create(true)
             .truncate(true)
             .open(path)
-            .context("Failed to open node store file")?;
+            .context("NodeStore: Failed to open dense cache file")?;
 
         // Set file length to max size (relying on sparse files)
         let file_size = max_nodes
             .checked_mul(NODE_SIZE as u64)
-            .context("Node cache size overflow")?;
+            .context("NodeStore: Dense cache size overflow")?;
         file.set_len(file_size)
-            .context("Failed to set node store file length")?;
+            .context("NodeStore: Failed to set dense cache file length")?;
 
         // Map the file
-        let mmap = unsafe { MmapMut::map_mut(&file).context("Failed to map node store file")? };
+        // SAFETY: The file handle is exclusively owned by this struct.
+        // The mmap remains valid as long as the file exists (guaranteed by NamedTempFile).
+        // No other process accesses this file. The mmap is only accessed in single-threaded
+        // context during write phase, then converted to read-only before sharing.
+        let mmap = unsafe {
+            MmapMut::map_mut(&file).context("NodeStore: Failed to map dense cache file")?
+        };
 
         Ok(Self {
             inner: NodeStoreWriterImpl::Dense(DenseNodeStoreWriter {
@@ -118,21 +124,26 @@ impl NodeStoreWriter {
     /// The file is automatically deleted when this store (and its reader) are dropped.
     pub fn new_dense_temp(max_nodes: u64) -> Result<Self> {
         // Create temp file
-        let temp_file =
-            NamedTempFile::new().context("Failed to create temporary node cache file")?;
+        let temp_file = NamedTempFile::new()
+            .context("NodeStore: Failed to create temporary dense cache file")?;
 
         // Set file length to max size (relying on sparse files)
         let file_size = max_nodes
             .checked_mul(NODE_SIZE as u64)
-            .context("Node cache size overflow")?;
+            .context("NodeStore: Temporary dense cache size overflow")?;
         temp_file
             .as_file()
             .set_len(file_size)
-            .context("Failed to set node store file length")?;
+            .context("NodeStore: Failed to set temporary dense cache file length")?;
 
         // Map the file
+        // SAFETY: The file handle is exclusively owned by this struct.
+        // The mmap remains valid as long as the file exists (guaranteed by NamedTempFile).
+        // No other process accesses this file. The mmap is only accessed in single-threaded
+        // context during write phase, then converted to read-only before sharing.
         let mmap = unsafe {
-            MmapMut::map_mut(temp_file.as_file()).context("Failed to map node store file")?
+            MmapMut::map_mut(temp_file.as_file())
+                .context("NodeStore: Failed to map temporary dense cache file")?
         };
 
         Ok(Self {
@@ -238,7 +249,7 @@ impl SparseNodeStoreWriter {
         {
             self.is_sorted = false;
             return Err(anyhow!(
-                "node ids are out of order for sparse cache; run `osmium sort` to sort by type then id"
+                "NodeStore: Node IDs are out of order for sparse cache; run `osmium sort` to sort by type then id"
             ));
         }
         self.last_id = Some(id);
@@ -249,32 +260,32 @@ impl SparseNodeStoreWriter {
     fn finalize(mut self) -> Result<NodeStoreReader> {
         self.writer
             .flush()
-            .context("Failed to flush sparse node cache file")?;
+            .context("NodeStore: Failed to flush sparse cache file")?;
         let temp_file = self
             .writer
             .into_inner()
-            .context("Failed to finalize sparse node cache file")?;
+            .context("NodeStore: Failed to finalize sparse cache file")?;
 
         if !self.is_sorted {
             return Err(anyhow!(
-                "node ids are out of order for sparse cache; run `osmium sort` to sort by type then id"
+                "NodeStore: Node IDs are out of order for sparse cache; run `osmium sort` to sort by type then id"
             ));
         }
 
         let file_len = temp_file
             .as_file()
             .metadata()
-            .context("Failed to stat sparse node cache file")?
+            .context("NodeStore: Failed to stat sparse cache file")?
             .len();
         if file_len % SPARSE_ENTRY_SIZE as u64 != 0 {
             return Err(anyhow!(
-                "sparse node cache file size is not aligned to entry size"
+                "NodeStore: Sparse cache file size is not aligned to entry size"
             ));
         }
         let file_count = file_len / SPARSE_ENTRY_SIZE as u64;
         if file_count != self.count {
             return Err(anyhow!(
-                "sparse node cache count mismatch: expected {}, file has {}",
+                "NodeStore: Sparse cache count mismatch: expected {}, file has {}",
                 self.count,
                 file_count
             ));
@@ -282,9 +293,12 @@ impl SparseNodeStoreWriter {
 
         Ok(NodeStoreReader {
             inner: NodeStoreReaderImpl::Sparse(SparseNodeStoreReader {
+                // SAFETY: The file handle is exclusively owned by this struct.
+                // The mmap remains valid as long as the file exists (guaranteed by NamedTempFile).
+                // No other process accesses this file.
                 mmap: unsafe {
                     Mmap::map(temp_file.as_file())
-                        .context("Failed to map sparse node cache file")?
+                        .context("NodeStore: Failed to map sparse cache file")?
                 },
                 count: self.count,
                 _temp_file: Some(temp_file),
@@ -320,7 +334,7 @@ impl DenseNodeStoreWriter {
     fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
         if id >= self.max_nodes {
             return Err(anyhow!(
-                "node id {id} exceeds node_cache_max_nodes ({}); increase --node-cache-max-nodes or use --node-cache-mode memory",
+                "NodeStore: Node ID {id} exceeds node_cache_max_nodes ({}); increase --node-cache-max-nodes or use --node-cache-mode memory",
                 self.max_nodes
             ));
         }
@@ -341,7 +355,7 @@ impl DenseNodeStoreWriter {
         let mmap = self
             .mmap
             .make_read_only()
-            .context("Failed to set node store to read-only")?;
+            .context("NodeStore: Failed to set dense cache to read-only")?;
         Ok(NodeStoreReader {
             inner: NodeStoreReaderImpl::Dense(DenseNodeStoreReader {
                 mmap,

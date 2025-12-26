@@ -19,13 +19,7 @@ pub enum ColumnValue {
     Json(serde_json::Value),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColumnType {
-    String,
-    Integer,
-    Float,
-    Json,
-}
+pub use crate::config::ColumnType;
 
 #[derive(Clone, Debug)]
 pub struct ColumnSpec {

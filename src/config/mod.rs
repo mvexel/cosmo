@@ -65,6 +65,17 @@ impl FromStr for NodeCacheMode {
     }
 }
 
+impl NodeCacheMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            NodeCacheMode::Auto => "auto",
+            NodeCacheMode::Sparse => "sparse",
+            NodeCacheMode::Dense => "dense",
+            NodeCacheMode::Memory => "memory",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TableConfig {
     #[serde(default)]
@@ -172,12 +183,21 @@ pub struct TagMatch {
     pub values: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ColumnType {
+    String,
+    Integer,
+    Float,
+    Json,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ColumnConfig {
     pub name: String,
     pub source: String,
     #[serde(rename = "type")]
-    pub col_type: String,
+    pub col_type: ColumnType,
 }
 
 #[cfg(test)]
@@ -360,7 +380,7 @@ tables:
         assert_eq!(roads.columns.len(), 1);
         assert_eq!(roads.columns[0].name, "name");
         assert_eq!(roads.columns[0].source, "tag:name");
-        assert_eq!(roads.columns[0].col_type, "string");
+        assert_eq!(roads.columns[0].col_type, ColumnType::String);
     }
 
     #[test]
@@ -577,10 +597,10 @@ tables:
 
         let roads = &config.tables["roads"];
         assert_eq!(roads.columns.len(), 4);
-        assert_eq!(roads.columns[0].col_type, "integer");
-        assert_eq!(roads.columns[1].col_type, "string");
-        assert_eq!(roads.columns[2].col_type, "integer");
-        assert_eq!(roads.columns[3].col_type, "float");
+        assert_eq!(roads.columns[0].col_type, ColumnType::Integer);
+        assert_eq!(roads.columns[1].col_type, ColumnType::String);
+        assert_eq!(roads.columns[2].col_type, ColumnType::Integer);
+        assert_eq!(roads.columns[3].col_type, ColumnType::Float);
     }
 
     #[test]
