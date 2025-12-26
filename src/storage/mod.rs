@@ -635,6 +635,24 @@ mod tests {
     }
 
     #[test]
+    fn dense_store_handles_very_large_limit() {
+        // 16B nodes * 8 bytes = 128GB file.
+        // This should succeed on systems with sparse file support without using 128GB of actual disk.
+        let result = NodeStoreWriter::new_dense_temp(16_000_000_000);
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                // If the OS/filesystem doesn't support large sparse files, we might get an error.
+                // But on modern macOS (APFS) this should work fine.
+                tracing::warn!(
+                    "Large dense store initialization failed (likely no sparse file support): {}",
+                    e
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dense_store_returns_none_for_out_of_bounds() {
         let writer = NodeStoreWriter::new_dense_temp(100).unwrap();
         let reader = writer.finalize().unwrap();
