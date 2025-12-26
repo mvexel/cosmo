@@ -191,7 +191,12 @@ tables:
 "#;
     let stderr = run_cosmo_expect_failure(
         filters,
-        &["--node-cache-mode", "mmap", "--node-cache-max-nodes", "1000"],
+        &[
+            "--node-cache-mode",
+            "mmap",
+            "--node-cache-max-nodes",
+            "1000",
+        ],
     );
     assert!(
         stderr.contains("exceeds node_cache_max_nodes"),

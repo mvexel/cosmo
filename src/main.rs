@@ -221,8 +221,8 @@ fn process_pbf(
         // Create node store based on resolved mode
         let node_store = match resolved_mode {
             NodeCacheMode::Sparse => {
-                eprintln!("Node cache: {}", mode_desc);
-                NodeStoreWriter::new_sparse()
+                eprintln!("Node cache: {} (temp file)", mode_desc);
+                NodeStoreWriter::new_sparse().context("Failed to create sparse node store")?
             }
             NodeCacheMode::Dense => {
                 if let Some(ref path) = cli.node_cache {

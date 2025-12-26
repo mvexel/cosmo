@@ -6,3 +6,4 @@ osm-pbf-parquet/
 *.*parquet
 .DS_Store
 _agents/
+.claude

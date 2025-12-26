@@ -122,7 +122,7 @@ The node cache stores node coordinates for resolving way geometries. It is rebui
 ### Cache Modes
 
 - **auto** (default): Automatically selects `sparse` or `dense` based on input file size.
-- **sparse**: Sorted array with binary search. Memory-efficient for extracts.
+- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts.
 - **dense**: Memory-mapped file indexed by node ID. Best for planet/continent.
 - **memory**: In-memory HashMap. No disk usage, but high RAM consumption.
 
@@ -147,7 +147,7 @@ OSM node IDs are globally assigned (~13 billion max). Even a small city extract 
 | Mode | Storage | Lookup |
 |------|---------|--------|
 | **dense** | 8 bytes × max_node_id (~98 GB for planet) | O(1) direct indexing |
-| **sparse** | 16 bytes × actual_nodes | O(log n) binary search |
+| **sparse** | 16 bytes × actual_nodes (file-backed) | O(log n) binary search |
 
 For a US extract (1.49B nodes, 11% density), sparse uses ~22 GB vs dense's ~98 GB sparse file.
 
