@@ -59,7 +59,11 @@ Controls how geometries are constructed for each table:
 
 Map OSM tags or metadata to output columns.
 
+- `type`: `string`, `integer`, `float`, or `json`.
 - `source: "tag:<key>"`: Extracts the value of the OSM tag `<key>`.
+- `source: "tags"`: Extracts all OSM tags as a JSON object.
+- `source: "meta"`: Extracts all metadata fields as a JSON object.
+- `source: "refs"`: Extracts way node references as a JSON array (ways only).
 - `source: "meta:<field>"`: Extracts OSM metadata. Supported fields:
     - `id`: OSM ID (integer).
     - `version`: Version number (integer).
@@ -102,6 +106,26 @@ tables:
       - name: "osm_id"
         source: "meta:id"
         type: "integer"
+```
+
+### Pass-through Configuration
+
+To export all features with their tags and metadata as JSON blobs (useful for raw data conversion):
+
+```yaml
+tables:
+  all_features:
+    filter: {} # Empty filter matches everything
+    columns:
+      - name: tags
+        source: tags
+        type: json
+      - name: meta
+        source: meta
+        type: json
+      - name: refs
+        source: refs
+        type: json
 ```
 
 Runtime flags for tweaking the node cache method:

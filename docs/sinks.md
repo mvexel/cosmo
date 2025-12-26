@@ -12,7 +12,7 @@ Sinks receive a `FeatureRow`:
 
 Types are defined in `src/sinks/mod.rs`:
 
-- `ColumnValue` (`String`, `Integer`, `Float`)
+- `ColumnValue` (`String`, `Integer`, `Float`, `Json`)
 - `FeatureRow`
 - `DataSink` trait
 

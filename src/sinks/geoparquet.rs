@@ -37,6 +37,7 @@ impl GeoParquetSink {
                 ColumnType::String => DataType::Utf8,
                 ColumnType::Integer => DataType::Int64,
                 ColumnType::Float => DataType::Float64,
+                ColumnType::Json => DataType::Utf8,
             };
             fields.push(Field::new(&col.name, data_type, true));
         }
@@ -70,6 +71,7 @@ impl GeoParquetSink {
                 ColumnType::String => ColumnBuffer::String(Vec::new()),
                 ColumnType::Integer => ColumnBuffer::Integer(Vec::new()),
                 ColumnType::Float => ColumnBuffer::Float(Vec::new()),
+                ColumnType::Json => ColumnBuffer::String(Vec::new()),
             })
             .collect();
 
@@ -180,6 +182,7 @@ fn coerce_string(value: Option<&ColumnValue>) -> Option<String> {
         Some(ColumnValue::String(s)) => Some(s.clone()),
         Some(ColumnValue::Integer(n)) => Some(n.to_string()),
         Some(ColumnValue::Float(n)) => Some(n.to_string()),
+        Some(ColumnValue::Json(v)) => Some(v.to_string()),
         None => None,
     }
 }
@@ -189,6 +192,7 @@ fn coerce_i64(value: Option<&ColumnValue>) -> Option<i64> {
         Some(ColumnValue::Integer(n)) => Some(*n),
         Some(ColumnValue::Float(n)) => Some(*n as i64),
         Some(ColumnValue::String(s)) => s.parse::<i64>().ok(),
+        Some(ColumnValue::Json(_)) => None,
         None => None,
     }
 }
@@ -198,6 +202,7 @@ fn coerce_f64(value: Option<&ColumnValue>) -> Option<f64> {
         Some(ColumnValue::Float(n)) => Some(*n),
         Some(ColumnValue::Integer(n)) => Some(*n as f64),
         Some(ColumnValue::String(s)) => s.parse::<f64>().ok(),
+        Some(ColumnValue::Json(_)) => None,
         None => None,
     }
 }

@@ -36,6 +36,7 @@ impl DataSink for GeoJsonlSink {
                 ColumnValue::String(val) => Value::String(val),
                 ColumnValue::Integer(val) => Value::from(val),
                 ColumnValue::Float(val) => Value::from(val),
+                ColumnValue::Json(val) => val,
             };
             properties.insert(name, json_value);
         }

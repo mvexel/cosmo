@@ -468,6 +468,7 @@ fn parse_column_type(value: &str) -> Result<ColumnType> {
         "string" => Ok(ColumnType::String),
         "integer" => Ok(ColumnType::Integer),
         "float" => Ok(ColumnType::Float),
+        "json" => Ok(ColumnType::Json),
         _ => Err(anyhow::anyhow!("unsupported column type: {}", value)),
     }
 }
@@ -494,6 +495,7 @@ fn process_block_collect(
                             &table.columns,
                             runtime,
                             Some(build_metadata_from_info(node.id(), &node.info())),
+                            None,
                         );
                         rows.push(row);
                     }
@@ -515,6 +517,7 @@ fn process_block_collect(
                             &table.columns,
                             runtime,
                             metadata,
+                            None,
                         );
                         rows.push(row);
                     }
@@ -527,9 +530,10 @@ fn process_block_collect(
                         continue;
                     }
                     if matches_filter(&table.filter, &tag_map) {
-                        let coords: Vec<(f64, f64)> = way
-                            .refs()
-                            .filter_map(|id| node_store.get(id as u64))
+                        let refs: Vec<i64> = way.refs().collect();
+                        let coords: Vec<(f64, f64)> = refs
+                            .iter()
+                            .filter_map(|&id| node_store.get(id as u64))
                             .collect();
 
                         if coords.len() < 2 {
@@ -544,6 +548,7 @@ fn process_block_collect(
                             &table.columns,
                             runtime,
                             Some(build_metadata_from_info(way.id(), &way.info())),
+                            Some(refs),
                         );
                         rows.push(row);
                     }
@@ -885,10 +890,40 @@ fn build_feature_row(
     columns: &[config::ColumnConfig],
     runtime: &RuntimeConfig,
     metadata: Option<MetadataFields>,
+    refs: Option<Vec<i64>>,
 ) -> FeatureRow {
     let mut column_values: HashMap<String, ColumnValue> = HashMap::new();
 
     for col in columns {
+        if col.source == "tags" {
+            let json_tags: Map<String, Value> = tags
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            column_values.insert(col.name.clone(), ColumnValue::Json(Value::Object(json_tags)));
+            continue;
+        } else if col.source == "meta" {
+            if let Some(meta) = &metadata {
+                let json_meta = serde_json::json!({
+                    "id": meta.id,
+                    "version": meta.version,
+                    "timestamp": meta.timestamp,
+                    "user": meta.user,
+                    "uid": meta.uid,
+                    "changeset": meta.changeset,
+                    "visible": meta.visible
+                });
+                column_values.insert(col.name.clone(), ColumnValue::Json(json_meta));
+            }
+            continue;
+        } else if col.source == "refs" {
+            if let Some(r) = &refs {
+                let json_refs = serde_json::to_value(r).unwrap_or(Value::Null);
+                column_values.insert(col.name.clone(), ColumnValue::Json(json_refs));
+            }
+            continue;
+        }
+
         if col.source.starts_with("tag:") {
             let tag_key = &col.source[4..];
             if let Some(val) = tags.get(tag_key)
@@ -1059,6 +1094,7 @@ fn process_block_nodes_only_collect(
                             &table.columns,
                             runtime,
                             Some(build_metadata_from_info(node.id(), &node.info())),
+                            None,
                         );
                         rows.push(row);
                     }
@@ -1080,6 +1116,7 @@ fn process_block_nodes_only_collect(
                             &table.columns,
                             runtime,
                             metadata,
+                            None,
                         );
                         rows.push(row);
                     }
@@ -1201,6 +1238,7 @@ mod tests {
             &columns,
             &RuntimeConfig::default(),
             Some(metadata),
+            None,
         );
         assert!(matches!(
             row.columns.get("timestamp"),

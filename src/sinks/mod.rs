@@ -16,6 +16,7 @@ pub enum ColumnValue {
     String(String),
     Integer(i64),
     Float(f64),
+    Json(serde_json::Value),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum ColumnType {
     String,
     Integer,
     Float,
+    Json,
 }
 
 #[derive(Clone, Debug)]
