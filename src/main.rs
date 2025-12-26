@@ -3,11 +3,12 @@ use clap::{Parser, ValueEnum};
 use crossbeam_channel::bounded;
 use geo::algorithm::centroid::Centroid;
 use geo_types::{Geometry, LineString, Point, Polygon};
-use osmpbf::{BlobDecode, BlobReader, Element, Info, PrimitiveBlock};
+use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock, Info, PrimitiveBlock};
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -34,15 +35,10 @@ const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
 
 /// Resolve Auto mode to a concrete mode based on input file size.
 /// Returns the resolved mode and a description for logging.
-fn resolve_node_cache_mode(
-    requested: NodeCacheMode,
-    input_path: &Path,
-) -> (NodeCacheMode, String) {
+fn resolve_node_cache_mode(requested: NodeCacheMode, input_path: &Path) -> (NodeCacheMode, String) {
     match requested {
         NodeCacheMode::Auto => {
-            let file_size = std::fs::metadata(input_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
             let size_gb = file_size as f64 / (1024.0 * 1024.0 * 1024.0);
 
@@ -64,9 +60,76 @@ fn resolve_node_cache_mode(
     }
 }
 
+fn collect_sorted_headers(header: &HeaderBlock) -> Vec<String> {
+    const SORT_HEADERS: [&str; 2] = ["Sort.Type_then_ID", "sorting=Type_then_ID"];
+    let mut found: Vec<String> = Vec::new();
+    for feature in header
+        .required_features()
+        .iter()
+        .chain(header.optional_features().iter())
+    {
+        let feature_trim = feature.trim();
+        if SORT_HEADERS
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(feature_trim))
+            && !found
+                .iter()
+                .any(|existing| existing.as_str().eq_ignore_ascii_case(feature_trim))
+        {
+            found.push(feature_trim.to_string());
+        }
+    }
+    found
+}
+
+fn log_sorted_header(header: &HeaderBlock, logged: &Arc<AtomicBool>, verbose: bool) {
+    if !verbose {
+        return;
+    }
+    let found = collect_sorted_headers(header);
+    if found.is_empty() {
+        return;
+    }
+    if !logged.swap(true, Ordering::SeqCst) {
+        eprintln!();
+        eprintln!("Detected PBF sort header(s): {}", found.join(", "));
+    }
+}
+
+fn summarize_filters(filters: &FiltersConfig) -> (usize, usize, bool, bool, bool) {
+    let mut column_count = 0usize;
+    let mut any_node = false;
+    let mut any_way = false;
+    let mut any_relation = false;
+
+    for table in filters.tables.values() {
+        column_count = column_count.saturating_add(table.columns.len());
+        any_node |= table.geometry.node;
+        any_way |= table.geometry.way.enabled();
+        any_relation |= table.geometry.relation;
+    }
+
+    (
+        filters.tables.len(),
+        column_count,
+        any_node,
+        any_way,
+        any_relation,
+    )
+}
+
+fn output_format_label(format: &OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::GeoJson => "geojson",
+        OutputFormat::GeoJsonl => "geojsonl",
+        OutputFormat::GeoParquet => "geoparquet",
+    }
+}
+
 macro_rules! vprintln {
     ($verbose:expr, $($arg:tt)*) => {
         if $verbose {
+            // TODO: Consider a structured logging crate (log/tracing) if verbosity grows.
             eprintln!($($arg)*);
         }
     };
@@ -91,7 +154,7 @@ impl ProgressCounter {
 
     fn inc(&mut self, delta: u64) {
         self.count = self.count.saturating_add(delta);
-        if self.count % self.interval == 0 {
+        if self.count.is_multiple_of(self.interval) {
             self.print();
         }
     }
@@ -164,6 +227,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let filters = Arc::new(FiltersConfig::load(&cli.filters)?);
+    if cli.verbose {
+        let (tables, columns, any_node, any_way, any_relation) = summarize_filters(&filters);
+        vprintln!(
+            cli.verbose,
+            "Filters: {} tables, {} columns (nodes: {}, ways: {}, relations: {})",
+            tables,
+            columns,
+            any_node,
+            any_way,
+            any_relation
+        );
+    }
 
     let mut runtime = RuntimeConfig::default();
 
@@ -184,7 +259,12 @@ fn main() -> Result<()> {
     let runtime = Arc::new(runtime);
 
     // 1. Initialize Sink
-    let sink = Arc::new(Mutex::new(init_sink(&cli.format, &cli.output, &filters)?));
+    let sink = Arc::new(Mutex::new(init_sink(
+        &cli.format,
+        &cli.output,
+        &filters,
+        cli.verbose,
+    )?));
 
     let needs_nodes = needs_node_store(&filters);
     let match_count = process_pbf(
@@ -213,7 +293,14 @@ fn process_pbf(
     sink: SinkHandle,
     needs_nodes: bool,
 ) -> Result<u64> {
+    vprintln!(cli.verbose, "Node cache required: {}", needs_nodes);
     if needs_nodes {
+        if cli.verbose
+            && let Ok(metadata) = std::fs::metadata(&cli.input)
+        {
+            let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+            vprintln!(cli.verbose, "Input size: {:.2} GB", size_gb);
+        }
         // Resolve auto mode to concrete mode based on input file size
         let (resolved_mode, mode_desc) =
             resolve_node_cache_mode(runtime.node_cache_mode, &cli.input);
@@ -221,13 +308,14 @@ fn process_pbf(
         // Create node store based on resolved mode
         let node_store = match resolved_mode {
             NodeCacheMode::Sparse => {
-                eprintln!("Node cache: {} (temp file)", mode_desc);
+                vprintln!(cli.verbose, "Node cache: {} (temp file)", mode_desc);
                 NodeStoreWriter::new_sparse().context("Failed to create sparse node store")?
             }
             NodeCacheMode::Dense => {
                 if let Some(ref path) = cli.node_cache {
                     // User provided explicit path - no auto-cleanup
-                    eprintln!(
+                    vprintln!(
+                        cli.verbose,
                         "Node cache: {} at {:?} (max {} nodes)",
                         mode_desc,
                         path,
@@ -237,7 +325,8 @@ fn process_pbf(
                         .context("Failed to create dense node store")?
                 } else {
                     // Use temp file with auto-cleanup on drop
-                    eprintln!(
+                    vprintln!(
+                        cli.verbose,
                         "Node cache: {} (temp file, max {} nodes)",
                         mode_desc,
                         runtime.node_cache_max_nodes
@@ -247,7 +336,7 @@ fn process_pbf(
                 }
             }
             NodeCacheMode::Memory => {
-                eprintln!("Node cache: {}", mode_desc);
+                vprintln!(cli.verbose, "Node cache: {}", mode_desc);
                 NodeStoreWriter::new_memory()
             }
             NodeCacheMode::Auto => {
@@ -255,25 +344,42 @@ fn process_pbf(
             }
         };
 
+        // Use sequential processing for sparse mode to preserve sort order and avoid in-memory sort
+        let use_parallel = !matches!(resolved_mode, NodeCacheMode::Sparse);
+        let pass1_mode = if use_parallel {
+            "parallel"
+        } else {
+            "sequential"
+        };
         vprintln!(
             cli.verbose,
-            "Pass 1: Indexing nodes from {:?}...",
-            cli.input
+            "Pass 1: Indexing nodes from {:?} ({})...",
+            cli.input,
+            pass1_mode
         );
-        let (node_store, node_count) = pass1_index_nodes(&cli.input, node_store)?;
+        let (node_store, node_count) =
+            pass1_index_nodes(&cli.input, node_store, use_parallel, cli.verbose)?;
         vprintln!(cli.verbose, "Indexed {} nodes.", node_count);
 
+        let finalize_step = match resolved_mode {
+            NodeCacheMode::Sparse => "Finalizing node cache (flush + mmap)...",
+            NodeCacheMode::Dense => "Finalizing node cache (mmap read-only)...",
+            NodeCacheMode::Memory => "Finalizing node cache (in-memory)...",
+            NodeCacheMode::Auto => "Finalizing node cache...",
+        };
+        vprintln!(cli.verbose, "{}", finalize_step);
         let node_store = Arc::new(node_store.finalize()?);
+        vprintln!(cli.verbose, "Node cache ready.");
 
-        vprintln!(cli.verbose, "Pass 2: Processing elements...");
-        let result = pass2_process(&cli.input, filters, runtime, node_store, sink)?;
+        vprintln!(cli.verbose, "Pass 2: Processing elements (parallel)...");
+        let result = pass2_process(&cli.input, filters, runtime, node_store, sink, cli.verbose)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 
         Ok(result)
     } else {
-        vprintln!(cli.verbose, "Single pass: Processing nodes...");
-        pass_nodes_only(&cli.input, filters, runtime, sink)
+        vprintln!(cli.verbose, "Single pass: Processing nodes (parallel)...");
+        pass_nodes_only(&cli.input, filters, runtime, sink, cli.verbose)
     }
 }
 
@@ -281,18 +387,32 @@ fn init_sink(
     format: &OutputFormat,
     output: &Path,
     filters: &FiltersConfig,
+    verbose: bool,
 ) -> Result<Box<dyn DataSink + Send>> {
     match format {
         OutputFormat::GeoJson => {
             if output == Path::new("-") {
                 anyhow::bail!("geojson output to stdout is not supported; use geojsonl instead");
             }
+            vprintln!(
+                verbose,
+                "Sink: {} -> {:?}",
+                output_format_label(format),
+                output
+            );
             Ok(Box::new(GeoJsonSink::new(output)?))
         }
         OutputFormat::GeoJsonl => {
             if output == Path::new("-") {
+                vprintln!(verbose, "Sink: {} -> stdout", output_format_label(format));
                 Ok(Box::new(GeoJsonlSink::stdout()?))
             } else {
+                vprintln!(
+                    verbose,
+                    "Sink: {} -> {:?}",
+                    output_format_label(format),
+                    output
+                );
                 Ok(Box::new(GeoJsonlSink::new(output)?))
             }
         }
@@ -301,6 +421,13 @@ fn init_sink(
                 anyhow::bail!("parquet output to stdout is not supported");
             }
             let columns = collect_columns(filters)?;
+            vprintln!(
+                verbose,
+                "Sink: {} -> {:?} ({} columns)",
+                output_format_label(format),
+                output,
+                columns.len()
+            );
             Ok(Box::new(GeoParquetSink::new(output, columns)?))
         }
     }
@@ -431,9 +558,15 @@ fn process_block_collect(
     Ok(rows)
 }
 
-fn pass1_index_nodes(path: &Path, node_store: NodeStoreWriter) -> Result<(NodeStoreWriter, u64)> {
-    let reader = BlobReader::from_path(path)?;
+fn pass1_index_nodes(
+    path: &Path,
+    node_store: NodeStoreWriter,
+    use_parallel: bool,
+    verbose: bool,
+) -> Result<(NodeStoreWriter, u64)> {
+    let mut reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<(u64, f64, f64)>>(64);
+    let header_logged = Arc::new(AtomicBool::new(false));
 
     let writer = std::thread::spawn(move || -> Result<(NodeStoreWriter, u64)> {
         let mut node_store = node_store;
@@ -457,12 +590,53 @@ fn pass1_index_nodes(path: &Path, node_store: NodeStoreWriter) -> Result<(NodeSt
         Ok((node_store, node_count))
     });
 
-    let decode_result = reader
-        .par_bridge()
-        .try_for_each(|blob_result| -> Result<()> {
+    let decode_result = if use_parallel {
+        let header_logged = Arc::clone(&header_logged);
+        let tx = tx.clone();
+        reader
+            .par_bridge()
+            .try_for_each(move |blob_result| -> Result<()> {
+                let blob = blob_result?;
+                match blob.decode() {
+                    Ok(BlobDecode::OsmHeader(header)) => {
+                        log_sorted_header(&header, &header_logged, verbose);
+                        Ok(())
+                    }
+                    Ok(BlobDecode::OsmData(block)) => {
+                        let mut batch = Vec::new();
+                        for element in block.elements() {
+                            match element {
+                                Element::Node(node) => {
+                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                }
+                                Element::DenseNode(node) => {
+                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if !batch.is_empty() {
+                            tx.send(batch).map_err(|err| anyhow!(err))?;
+                        }
+                        Ok(())
+                    }
+                    Ok(BlobDecode::Unknown(unknown)) => {
+                        vprintln!(verbose, "Unknown blob: {}", unknown);
+                        Ok(())
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            })
+    } else {
+        // Sequential processing to preserve node ID order (for sparse mode)
+        reader.try_for_each(|blob_result| -> Result<()> {
             let blob = blob_result?;
             match blob.decode() {
-                Ok(BlobDecode::OsmHeader(_)) => Ok(()),
+                Ok(BlobDecode::OsmHeader(header)) => {
+                    log_sorted_header(&header, &header_logged, verbose);
+                    Ok(())
+                }
                 Ok(BlobDecode::OsmData(block)) => {
                     let mut batch = Vec::new();
                     for element in block.elements() {
@@ -483,12 +657,13 @@ fn pass1_index_nodes(path: &Path, node_store: NodeStoreWriter) -> Result<(NodeSt
                     Ok(())
                 }
                 Ok(BlobDecode::Unknown(unknown)) => {
-                    eprintln!("Unknown blob: {}", unknown);
+                    vprintln!(verbose, "Unknown blob: {}", unknown);
                     Ok(())
                 }
                 Err(error) => Err(error.into()),
             }
-        });
+        })
+    };
 
     drop(tx);
 
@@ -529,6 +704,7 @@ fn pass2_process(
     runtime: Arc<RuntimeConfig>,
     node_store: Arc<NodeStoreReader>,
     sink: SinkHandle,
+    verbose: bool,
 ) -> Result<u64> {
     let reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<FeatureRow>>(64);
@@ -555,7 +731,7 @@ fn pass2_process(
                 Ok(BlobDecode::OsmHeader(_)) => return Ok(()),
                 Ok(BlobDecode::OsmData(block)) => block,
                 Ok(BlobDecode::Unknown(unknown)) => {
-                    eprintln!("Unknown blob: {}", unknown);
+                    vprintln!(verbose, "Unknown blob: {}", unknown);
                     return Ok(());
                 }
                 Err(error) => return Err(error.into()),
@@ -613,6 +789,7 @@ fn pass_nodes_only(
     filters: Arc<FiltersConfig>,
     runtime: Arc<RuntimeConfig>,
     sink: SinkHandle,
+    verbose: bool,
 ) -> Result<u64> {
     let reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<FeatureRow>>(64);
@@ -639,7 +816,7 @@ fn pass_nodes_only(
                 Ok(BlobDecode::OsmHeader(_)) => return Ok(()),
                 Ok(BlobDecode::OsmData(block)) => block,
                 Ok(BlobDecode::Unknown(unknown)) => {
-                    eprintln!("Unknown blob: {}", unknown);
+                    vprintln!(verbose, "Unknown blob: {}", unknown);
                     return Ok(());
                 }
                 Err(error) => return Err(error.into()),
@@ -694,9 +871,7 @@ fn pass_nodes_only(
 
 fn matches_filter(filter: &FilterExpr, tags: &HashMap<String, String>) -> bool {
     match filter {
-        FilterExpr::Simple(map) => map
-            .iter()
-            .all(|(k, v)| tags.get(k).map_or(false, |tag_val| tag_val == v)),
+        FilterExpr::Simple(map) => map.iter().all(|(k, v)| tags.get(k) == Some(v)),
         FilterExpr::Any { any } => any.iter().any(|expr| matches_filter(expr, tags)),
         FilterExpr::All { all } => all.iter().all(|expr| matches_filter(expr, tags)),
         FilterExpr::Not { not } => !matches_filter(not, tags),
@@ -716,17 +891,16 @@ fn build_feature_row(
     for col in columns {
         if col.source.starts_with("tag:") {
             let tag_key = &col.source[4..];
-            if let Some(val) = tags.get(tag_key) {
-                if let Some(value) = parse_column_value(val, &col.col_type) {
-                    column_values.insert(col.name.clone(), value);
-                }
+            if let Some(val) = tags.get(tag_key)
+                && let Some(value) = parse_column_value(val, &col.col_type)
+            {
+                column_values.insert(col.name.clone(), value);
             }
-        } else if col.source.starts_with("meta:") {
-            if let Some(meta_val) = extract_meta_value(&col.source[5..], metadata.as_ref()) {
-                if let Some(value) = parse_column_value(&meta_val, &col.col_type) {
-                    column_values.insert(col.name.clone(), value);
-                }
-            }
+        } else if col.source.starts_with("meta:")
+            && let Some(meta_val) = extract_meta_value(&col.source[5..], metadata.as_ref())
+            && let Some(value) = parse_column_value(&meta_val, &col.col_type)
+        {
+            column_values.insert(col.name.clone(), value);
         }
     }
 

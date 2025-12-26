@@ -101,18 +101,13 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ClosedWayMode {
+    #[default]
     Polygon,
     Centroid,
     Linestring,
-}
-
-impl Default for ClosedWayMode {
-    fn default() -> Self {
-        ClosedWayMode::Polygon
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
@@ -525,7 +520,10 @@ tables:
         assert!(!roads.geometry.node);
         assert!(!roads.geometry.relation);
         assert!(roads.geometry.way.enabled());
-        assert!(matches!(roads.geometry.closed_way, ClosedWayMode::Linestring));
+        assert!(matches!(
+            roads.geometry.closed_way,
+            ClosedWayMode::Linestring
+        ));
     }
 
     #[test]

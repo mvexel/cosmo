@@ -122,8 +122,8 @@ The node cache stores node coordinates for resolving way geometries. It is rebui
 ### Cache Modes
 
 - **auto** (default): Automatically selects `sparse` or `dense` based on input file size.
-- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts.
-- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent.
+- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts. Uses sequential indexing to preserve sort order; requires sorted input (use `osmium sort` if needed).
+- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent. Uses parallel indexing for maximum speed.
 - **memory**: In-memory HashMap. No disk usage, but high RAM consumption.
 
 ### Auto-Selection

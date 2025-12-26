@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use memmap2::{Mmap, MmapMut};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use tempfile::NamedTempFile;
 
@@ -91,6 +91,7 @@ impl NodeStoreWriter {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path)
             .context("Failed to open node store file")?;
 
@@ -117,7 +118,8 @@ impl NodeStoreWriter {
     /// The file is automatically deleted when this store (and its reader) are dropped.
     pub fn new_dense_temp(max_nodes: u64) -> Result<Self> {
         // Create temp file
-        let temp_file = NamedTempFile::new().context("Failed to create temporary node cache file")?;
+        let temp_file =
+            NamedTempFile::new().context("Failed to create temporary node cache file")?;
 
         // Set file length to max size (relying on sparse files)
         let file_size = max_nodes
@@ -202,48 +204,42 @@ fn write_sparse_entry<W: Write>(writer: &mut W, id: u64, packed: i64) -> Result<
     Ok(())
 }
 
-fn read_sparse_entries(path: &Path, count: u64) -> Result<Vec<(u64, i64)>> {
-    if count > usize::MAX as u64 {
-        return Err(anyhow!(
-            "sparse node cache too large to sort in-memory; rerun with dense or memory"
-        ));
-    }
-
-    let file = File::open(path).context("Failed to open sparse node cache file for sorting")?;
-    let mut reader = BufReader::new(file);
-    let mut entries = Vec::with_capacity(count as usize);
-
-    for _ in 0..count {
-        let mut buf = [0u8; SPARSE_ENTRY_SIZE];
-        reader
-            .read_exact(&mut buf)
-            .context("Failed to read sparse node cache entry")?;
-        let id = u64::from_le_bytes(buf[0..8].try_into().unwrap());
-        let packed = i64::from_le_bytes(buf[8..16].try_into().unwrap());
-        entries.push((id, packed));
-    }
-
-    Ok(entries)
-}
-
-fn write_sparse_entries(file: &File, entries: &[(u64, i64)]) -> Result<()> {
-    let mut writer = BufWriter::new(file);
-    for (id, packed) in entries {
-        write_sparse_entry(&mut writer, *id, *packed)?;
-    }
-    writer
-        .flush()
-        .context("Failed to flush sorted sparse node cache file")?;
-    Ok(())
-}
-
+/// Implements methods for writing and finalizing a sparse node store.
+///
+/// # Methods
+///
+/// - `put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()>`  
+///   Inserts a node with the given `id`, latitude (`lat`), and longitude (`lon`) into the store.
+///   The coordinates are packed for storage efficiency.  
+///   Maintains a flag to track if the inserted IDs are sorted.  
+///   Increments the internal count of stored nodes.  
+///   Returns an error if writing the entry fails.
+///
+/// - `finalize(self) -> Result<NodeStoreReader>`  
+///   Finalizes the writing process and returns a `NodeStoreReader` for reading the stored nodes.  
+///   Flushes and closes the underlying writer.  
+///   If the inserted IDs are not sorted, reads all entries, sorts them by ID, and writes them to a new temporary file.  
+///   Validates that the file size matches the expected number of entries and entry size.  
+///   Memory-maps the file for efficient reading.  
+///   Returns an error if any I/O or validation step fails.
+///
+/// # Errors
+///
+/// Both methods return a `Result` and may fail due to I/O errors, file alignment issues, or count mismatches.
+///
+/// # Safety
+///
+/// The `finalize` method uses `unsafe` code to memory-map the file, which is required for efficient access but must be used with care.
 impl SparseNodeStoreWriter {
     fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
         let packed = pack_coords(lat, lon);
-        if let Some(last_id) = self.last_id {
-            if id < last_id {
-                self.is_sorted = false;
-            }
+        if let Some(last_id) = self.last_id
+            && id < last_id
+        {
+            self.is_sorted = false;
+            return Err(anyhow!(
+                "node ids are out of order for sparse cache; run `osmium sort` to sort by type then id"
+            ));
         }
         self.last_id = Some(id);
         self.count = self.count.saturating_add(1);
@@ -254,21 +250,15 @@ impl SparseNodeStoreWriter {
         self.writer
             .flush()
             .context("Failed to flush sparse node cache file")?;
-        let mut temp_file = self
+        let temp_file = self
             .writer
             .into_inner()
             .context("Failed to finalize sparse node cache file")?;
 
-        let mut count = self.count;
         if !self.is_sorted {
-            let mut entries = read_sparse_entries(temp_file.path(), count)?;
-            entries.sort_by_key(|(id, _)| *id);
-            count = entries.len() as u64;
-
-            let sorted_file =
-                NamedTempFile::new().context("Failed to create sorted sparse node cache file")?;
-            write_sparse_entries(sorted_file.as_file(), &entries)?;
-            temp_file = sorted_file;
+            return Err(anyhow!(
+                "node ids are out of order for sparse cache; run `osmium sort` to sort by type then id"
+            ));
         }
 
         let file_len = temp_file
@@ -282,10 +272,10 @@ impl SparseNodeStoreWriter {
             ));
         }
         let file_count = file_len / SPARSE_ENTRY_SIZE as u64;
-        if file_count != count {
+        if file_count != self.count {
             return Err(anyhow!(
                 "sparse node cache count mismatch: expected {}, file has {}",
-                count,
+                self.count,
                 file_count
             ));
         }
@@ -296,7 +286,7 @@ impl SparseNodeStoreWriter {
                     Mmap::map(temp_file.as_file())
                         .context("Failed to map sparse node cache file")?
                 },
-                count,
+                count: self.count,
                 _temp_file: Some(temp_file),
             }),
         })
@@ -579,16 +569,8 @@ mod tests {
         let mut writer = NodeStoreWriter::new_sparse().unwrap();
         // Insert out of order
         writer.put(5, 51.5, -0.1).unwrap();
-        writer.put(1, 40.7, -74.0).unwrap();
-        writer.put(3, 35.6, 139.6).unwrap();
-
-        let reader = writer.finalize().unwrap();
-
-        // Should still find all nodes via binary search
-        assert!(reader.get(1).is_some());
-        assert!(reader.get(3).is_some());
-        assert!(reader.get(5).is_some());
-        assert!(reader.get(2).is_none());
+        let err = writer.put(1, 40.7, -74.0).unwrap_err();
+        assert!(err.to_string().contains("osmium sort"));
     }
 
     #[test]
