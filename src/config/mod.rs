@@ -20,6 +20,9 @@ impl FiltersConfig {
     }
 }
 
+pub const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+pub const DEFAULT_MAX_NODES: u64 = 16_000_000_000;
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RuntimeConfig {
     pub node_cache_mode: NodeCacheMode,
@@ -32,7 +35,7 @@ impl Default for RuntimeConfig {
         Self {
             node_cache_mode: NodeCacheMode::Auto,
             // OSM has ~10.3B nodes as of 2025; use generous headroom to skip prepass scan
-            node_cache_max_nodes: 16_000_000_000,
+            node_cache_max_nodes: DEFAULT_MAX_NODES,
             all_tags: false,
         }
     }
