@@ -13,15 +13,22 @@ use std::sync::Arc;
 use app::{Cli, OutputFormat, init_sink, needs_node_store, process_pbf, summarize_filters};
 use config::{FiltersConfig, RuntimeConfig};
 
+// anyhow::Result allows us to use ? operator in main to emit errors
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    /*
+    ******************
+    Initialize logging
+    ******************
+    */
     let level = if cli.verbose {
         tracing::Level::INFO
     } else {
         tracing::Level::WARN
     };
 
+    // tracing_subscriber is the engine that listens to log events and outputs them
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()
@@ -31,6 +38,11 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    /*
+    *********************
+    Initialize thread pool
+    *********************
+    */
     if let Some(threads) = cli.threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -38,8 +50,14 @@ fn main() -> Result<()> {
             .context("CLI: Failed to initialize thread pool")?;
     }
 
+    /*
+    ******************
+    Load filter config
+    ******************
+    */
     let filters = Arc::new(FiltersConfig::load(&cli.filters)?);
 
+    // feedback to user about the filters
     let (table_count, col_count, has_node, has_way, has_rel) = summarize_filters(&filters);
     tracing::info!(
         "Filters: {} tables, {} columns (nodes: {}, ways: {}, relations: {})",
@@ -50,9 +68,19 @@ fn main() -> Result<()> {
         has_rel
     );
 
+    /*
+    *************************
+    Initialize runtime config
+    *************************
+    */
+    let runtime_defaults = RuntimeConfig::default();
     let runtime = Arc::new(RuntimeConfig {
-        node_cache_mode: cli.node_cache_mode.unwrap_or(config::NodeCacheMode::Auto),
-        node_cache_max_nodes: cli.node_cache_max_nodes.unwrap_or(1_000_000_000),
+        node_cache_mode: cli
+            .node_cache_mode
+            .unwrap_or(runtime_defaults.node_cache_mode),
+        node_cache_max_nodes: cli
+            .node_cache_max_nodes
+            .unwrap_or(runtime_defaults.node_cache_max_nodes),
         all_tags: cli.all_tags,
     });
 
@@ -70,14 +98,28 @@ fn main() -> Result<()> {
         })
         .context("CLI: Could not detect output format from extension; use --format")?;
 
+    /*
+    ************************
+    Initialize selected sink
+    ************************
+    */
     let sink = init_sink(&format, &cli.output, &filters)?;
     let sink_handle = Arc::new(std::sync::Mutex::new(sink));
 
+    /*
+    ************************
+    Main processing pipeline
+    ************************
+    */
     let needs_nodes = needs_node_store(&filters);
     let start = std::time::Instant::now();
     let match_count = process_pbf(&cli, filters, runtime, sink_handle.clone(), needs_nodes)?;
 
-    // Finalize sink
+    /*
+    ********************
+    Clean up and metrics
+    ********************
+    */
     {
         let mut sink = sink_handle.lock().unwrap();
         sink.finish().context("Pipeline: Failed to finalize sink")?;
