@@ -6,6 +6,7 @@ use geozero::{CoordDimensions, ToWkb};
 use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
+use proj::Proj;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -45,6 +46,14 @@ impl GeoParquetSink {
 
         let schema = Arc::new(Schema::new(fields));
 
+        let crs_json = Proj::new("EPSG:4326")
+            .context("Failed to create PROJ definition for EPSG:4326")?
+            .to_projjson(None, None, None)
+            .context("Failed to generate PROJJSON for EPSG:4326")?;
+
+        let crs_value: serde_json::Value =
+            serde_json::from_str(&crs_json).context("Failed to parse PROJJSON string")?;
+
         let geo_metadata = serde_json::json!({
             "version": "1.0.0",
             "primary_column": "geometry",
@@ -52,7 +61,7 @@ impl GeoParquetSink {
                 "geometry": {
                     "encoding": "WKB",
                     "geometry_types": ["Point", "LineString", "Polygon"],
-                    "crs": "EPSG:4326"
+                    "crs": crs_value
                 }
             }
         })
@@ -359,7 +368,10 @@ mod tests {
 
         let point = Point::new(-0.1, 51.5);
         let mut col_map = HashMap::new();
-        col_map.insert("name".to_string(), ColumnValue::String("London".to_string()));
+        col_map.insert(
+            "name".to_string(),
+            ColumnValue::String("London".to_string()),
+        );
 
         let row = FeatureRow {
             geometry: geo_types::Geometry::Point(point),
@@ -413,7 +425,13 @@ mod tests {
         let mut sink = GeoParquetSink::new(temp_file.path(), columns).unwrap();
 
         let polygon = Polygon::new(
-            LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+            LineString::from(vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+            ]),
             vec![],
         );
         let mut col_map = HashMap::new();
