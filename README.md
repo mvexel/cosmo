@@ -11,6 +11,13 @@
 
 Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with optional filtering, which is arguably more useful.
 
+## Installation
+It's not published on crates.io yet, but you can install it locally from the source directory.
+
+```bash
+cargo install --path .
+```
+
 ## Usage
 
 Basic usage: 
@@ -18,7 +25,6 @@ Basic usage:
 ```bash
 cosmo --input <input.osm.pbf> \
   --output <output> \
-  --format <geojson|geojsonl|parquet> \
   --filters <filters.yaml> \
   [--all-tags] \
   [--verbose]
@@ -26,10 +32,11 @@ cosmo --input <input.osm.pbf> \
 
 ### Options
 
-- `--format`: Output format. `parquet` (or `geoparquet`) creates a GeoParquet file. `geojson` creates a standard FeatureCollection. `geojsonl` creates newline-delimited GeoJSON.
+- `--output`: Output file path. Cosmo will automatically detect the format based on the extension of the output file. Supported formats: `geojson`, `geojsonl`, `parquet`. Cosmo will automatically detect the format based on the extension of the output file. If you want to explicitly specify the format, use the `--format` option.
 - `--all-tags`: Include all original OSM tags in the output 'tags' property (JSON object), in addition to any explicit columns.
 - `--verbose`: Enable detailed logging.
 
+Some advanced options are available, see `cosmo --help` for details.
 
 ## Configuration Reference
 
