@@ -7,108 +7,139 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{
-    self, ClosedWayMode, FilterExpr, FiltersConfig, RuntimeConfig, WayGeometryMode,
+    ClosedWayMode, ColumnSource, CompiledColumn, CompiledConfig, RuntimeConfig, WayGeometryMode,
 };
+use crate::dsl::evaluate_filter;
+use crate::expr::{cel_value_to_string, evaluate_cel};
+use crate::mapping::evaluate_mapping;
 use crate::metadata::{
     MetadataFields, build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value,
 };
-use crate::sinks::{ColumnType, ColumnValue, FeatureRow};
+use crate::sinks::{ColumnValue, FeatureRow};
 use crate::storage::NodeStoreReader;
 use crate::utils::build_tag_map;
-use crate::utils::matches_tag;
 
 pub trait BlockProcessor: Send + Sync {
     fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>>;
 }
 
 pub struct StandardProcessor {
-    pub filters: Arc<FiltersConfig>,
+    pub config: Arc<CompiledConfig>,
     pub runtime: Arc<RuntimeConfig>,
     pub node_store: Arc<NodeStoreReader>,
 }
 
 impl BlockProcessor for StandardProcessor {
     fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>> {
-        process_block_collect(block, &self.filters, &self.runtime, &self.node_store)
+        process_block_collect(block, &self.config, &self.runtime, &self.node_store)
     }
 }
 
 pub struct NodesOnlyProcessor {
-    pub filters: Arc<FiltersConfig>,
+    pub config: Arc<CompiledConfig>,
     pub runtime: Arc<RuntimeConfig>,
 }
 
 impl BlockProcessor for NodesOnlyProcessor {
     fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>> {
-        process_block_nodes_only_collect(block, &self.filters, &self.runtime)
-    }
-}
-
-pub fn matches_filter(filter: &FilterExpr, tags: &HashMap<String, String>) -> bool {
-    match filter {
-        FilterExpr::Simple(map) => map.iter().all(|(k, v)| tags.get(k) == Some(v)),
-        FilterExpr::Any { any } => any.iter().any(|expr| matches_filter(expr, tags)),
-        FilterExpr::All { all } => all.iter().all(|expr| matches_filter(expr, tags)),
-        FilterExpr::Not { not } => !matches_filter(not, tags),
-        FilterExpr::Tag(tag_match) => matches_tag(tag_match, tags),
+        process_block_nodes_only_collect(block, &self.config, &self.runtime)
     }
 }
 
 pub fn build_feature_row(
     geometry: Geometry<f64>,
     tags: &HashMap<String, String>,
-    columns: &[config::ColumnConfig],
+    columns: &[CompiledColumn],
     runtime: &RuntimeConfig,
     metadata: Option<MetadataFields>,
     refs: Option<Vec<i64>>,
+    config: &CompiledConfig,
 ) -> FeatureRow {
     let mut column_values: HashMap<String, ColumnValue> = HashMap::new();
 
     for col in columns {
-        if col.source == "tags" {
-            let json_tags: Map<String, Value> = tags
-                .iter()
-                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-                .collect();
-            column_values.insert(
-                col.name.clone(),
-                ColumnValue::Json(Value::Object(json_tags)),
-            );
-            continue;
-        } else if col.source == "meta" {
-            if let Some(meta) = &metadata {
-                let json_meta = serde_json::json!({
-                    "id": meta.id,
-                    "version": meta.version,
-                    "timestamp": meta.timestamp,
-                    "user": meta.user,
-                    "uid": meta.uid,
-                    "changeset": meta.changeset,
-                    "visible": meta.visible
-                });
-                column_values.insert(col.name.clone(), ColumnValue::Json(json_meta));
+        let value = match &col.source {
+            ColumnSource::Tag(key) => tags.get(key).map(|v| ColumnValue::String(v.clone())),
+            ColumnSource::Meta(key) => {
+                if let Some(m) = &metadata {
+                    extract_meta_value(key, Some(m)).map(ColumnValue::String)
+                } else {
+                    None
+                }
             }
-            continue;
-        } else if col.source == "refs" {
-            if let Some(r) = &refs {
-                let json_refs = serde_json::to_value(r).unwrap_or(Value::Null);
-                column_values.insert(col.name.clone(), ColumnValue::Json(json_refs));
+            ColumnSource::AllTags => Some(ColumnValue::Json(
+                serde_json::to_value(tags).unwrap_or(Value::Null),
+            )),
+            ColumnSource::AllMeta => {
+                if let Some(m) = &metadata {
+                    let json_meta = serde_json::json!({
+                        "id": m.id,
+                        "version": m.version,
+                        "timestamp": m.timestamp,
+                        "user": m.user,
+                        "uid": m.uid,
+                        "changeset": m.changeset,
+                        "visible": m.visible
+                    });
+                    Some(ColumnValue::Json(json_meta))
+                } else {
+                    None
+                }
             }
-            continue;
-        }
+            ColumnSource::Refs => {
+                refs.as_ref().map(|r| {
+                    ColumnValue::Json(serde_json::to_value(r).unwrap_or(Value::Null))
+                })
+            }
+            ColumnSource::Mapping(name) => config
+                .mappings
+                .get(name)
+                .and_then(|m| evaluate_mapping(m, tags))
+                .map(ColumnValue::String),
+            ColumnSource::Cel(program) => {
+                match &metadata {
+                    Some(m) => {
+                        // TODO: Add metadata to CEL context properly if needed beyond tags
+                        let mut meta_map = HashMap::new();
+                        meta_map.insert("id".to_string(), m.id.to_string());
+                        if let Some(v) = &m.version {
+                            meta_map.insert("version".to_string(), v.to_string());
+                        }
+                        if let Some(t) = &m.timestamp {
+                            meta_map.insert("timestamp".to_string(), t.clone());
+                        }
 
-        if col.source.starts_with("tag:") {
-            let tag_key = &col.source[4..];
-            if let Some(val) = tags.get(tag_key)
-                && let Some(value) = parse_column_value(val, &col.col_type)
-            {
-                column_values.insert(col.name.clone(), value);
+                        let ctx = crate::expr::CelContext {
+                            tags,
+                            meta: &meta_map,
+                        };
+                        match evaluate_cel(program, &ctx) {
+                            Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
+                            Err(e) => {
+                                tracing::debug!("CEL evaluation failed: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        let ctx = crate::expr::CelContext {
+                            tags,
+                            meta: &HashMap::new(),
+                        };
+                        match evaluate_cel(program, &ctx) {
+                            Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
+                            Err(e) => {
+                                tracing::debug!("CEL evaluation failed: {}", e);
+                                None
+                            }
+                        }
+                    }
+                }
             }
-        } else if col.source.starts_with("meta:")
-            && let Some(meta_val) = extract_meta_value(&col.source[5..], metadata.as_ref())
-            && let Some(value) = parse_column_value(&meta_val, &col.col_type)
-        {
-            column_values.insert(col.name.clone(), value);
+        };
+
+        if let Some(val) = value {
+            column_values.insert(col.name.clone(), val);
         }
     }
 
@@ -128,17 +159,8 @@ pub fn build_feature_row(
     }
 }
 
-pub fn parse_column_value(value: &str, col_type: &ColumnType) -> Option<ColumnValue> {
-    match col_type {
-        ColumnType::Integer => value.parse::<i64>().ok().map(ColumnValue::Integer),
-        ColumnType::Float => value.parse::<f64>().ok().map(ColumnValue::Float),
-        ColumnType::Json => serde_json::from_str(value).ok().map(ColumnValue::Json),
-        ColumnType::String => Some(ColumnValue::String(value.to_string())),
-    }
-}
-
 pub fn build_way_geometry(
-    geometry_cfg: &config::GeometryConfig,
+    geometry_cfg: &crate::config::GeometryConfig,
     line_string: LineString<f64>,
     coords: &[(f64, f64)],
 ) -> Geometry<f64> {
@@ -171,71 +193,58 @@ pub fn build_way_geometry(
 
 pub fn process_block_collect(
     block: PrimitiveBlock,
-    filters: &FiltersConfig,
+    config: &CompiledConfig,
     runtime: &RuntimeConfig,
     node_store: &NodeStoreReader,
 ) -> Result<Vec<FeatureRow>> {
     let mut rows = Vec::new();
+    let table = &config.table;
+
     for element in block.elements() {
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
-                for table in filters.tables.values() {
-                    if !table.geometry.node {
-                        continue;
-                    }
-                    if matches_filter(&table.filter, &tag_map) {
-                        let row = build_feature_row(
-                            Geometry::Point(Point::new(node.lon(), node.lat())),
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            Some(build_metadata_from_info(node.id(), &node.info())),
-                            None,
-                        );
-                        rows.push(row);
-                    }
+                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    let row = build_feature_row(
+                        Geometry::Point(Point::new(node.lon(), node.lat())),
+                        &tag_map,
+                        &table.columns,
+                        runtime,
+                        Some(build_metadata_from_info(node.id(), &node.info())),
+                        None,
+                        config,
+                    );
+                    rows.push(row);
                 }
             }
             Element::DenseNode(node) => {
                 let tag_map = build_tag_map(node.tags());
-                for table in filters.tables.values() {
-                    if !table.geometry.node {
-                        continue;
-                    }
-                    if matches_filter(&table.filter, &tag_map) {
-                        let metadata = node
-                            .info()
-                            .map(|info| build_metadata_from_dense_info(node.id(), info));
-                        let row = build_feature_row(
-                            Geometry::Point(Point::new(node.lon(), node.lat())),
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            metadata,
-                            None,
-                        );
-                        rows.push(row);
-                    }
+                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    let metadata = node
+                        .info()
+                        .map(|info| build_metadata_from_dense_info(node.id(), info));
+                    let row = build_feature_row(
+                        Geometry::Point(Point::new(node.lon(), node.lat())),
+                        &tag_map,
+                        &table.columns,
+                        runtime,
+                        metadata,
+                        None,
+                        config,
+                    );
+                    rows.push(row);
                 }
             }
             Element::Way(way) => {
                 let tag_map = build_tag_map(way.tags());
-                for table in filters.tables.values() {
-                    if !table.geometry.way.enabled() {
-                        continue;
-                    }
-                    if matches_filter(&table.filter, &tag_map) {
-                        let refs: Vec<i64> = way.refs().collect();
-                        let coords: Vec<(f64, f64)> = refs
-                            .iter()
-                            .filter_map(|&id| node_store.get(id as u64))
-                            .collect();
+                if table.geometry.way.enabled() && evaluate_filter(&table.filter, &tag_map) {
+                    let refs: Vec<i64> = way.refs().collect();
+                    let coords: Vec<(f64, f64)> = refs
+                        .iter()
+                        .filter_map(|&id| node_store.get(id as u64))
+                        .collect();
 
-                        if coords.len() < 2 {
-                            continue;
-                        }
-
+                    if coords.len() >= 2 {
                         let line_string = LineString::from(coords.clone());
                         let geometry = build_way_geometry(&table.geometry, line_string, &coords);
                         let row = build_feature_row(
@@ -245,6 +254,7 @@ pub fn process_block_collect(
                             runtime,
                             Some(build_metadata_from_info(way.id(), &way.info())),
                             Some(refs),
+                            config,
                         );
                         rows.push(row);
                     }
@@ -261,51 +271,45 @@ pub fn process_block_collect(
 
 pub fn process_block_nodes_only_collect(
     block: PrimitiveBlock,
-    filters: &FiltersConfig,
+    config: &CompiledConfig,
     runtime: &RuntimeConfig,
 ) -> Result<Vec<FeatureRow>> {
     let mut rows = Vec::new();
+    let table = &config.table;
+
     for element in block.elements() {
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
-                for table in filters.tables.values() {
-                    if !table.geometry.node {
-                        continue;
-                    }
-                    if matches_filter(&table.filter, &tag_map) {
-                        let row = build_feature_row(
-                            Geometry::Point(Point::new(node.lon(), node.lat())),
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            Some(build_metadata_from_info(node.id(), &node.info())),
-                            None,
-                        );
-                        rows.push(row);
-                    }
+                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    let row = build_feature_row(
+                        Geometry::Point(Point::new(node.lon(), node.lat())),
+                        &tag_map,
+                        &table.columns,
+                        runtime,
+                        Some(build_metadata_from_info(node.id(), &node.info())),
+                        None,
+                        config,
+                    );
+                    rows.push(row);
                 }
             }
             Element::DenseNode(node) => {
                 let tag_map = build_tag_map(node.tags());
-                for table in filters.tables.values() {
-                    if !table.geometry.node {
-                        continue;
-                    }
-                    if matches_filter(&table.filter, &tag_map) {
-                        let metadata = node
-                            .info()
-                            .map(|info| build_metadata_from_dense_info(node.id(), info));
-                        let row = build_feature_row(
-                            Geometry::Point(Point::new(node.lon(), node.lat())),
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            metadata,
-                            None,
-                        );
-                        rows.push(row);
-                    }
+                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    let metadata = node
+                        .info()
+                        .map(|info| build_metadata_from_dense_info(node.id(), info));
+                    let row = build_feature_row(
+                        Geometry::Point(Point::new(node.lon(), node.lat())),
+                        &tag_map,
+                        &table.columns,
+                        runtime,
+                        metadata,
+                        None,
+                        config,
+                    );
+                    rows.push(row);
                 }
             }
             _ => {}
@@ -318,11 +322,13 @@ pub fn process_block_nodes_only_collect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CompiledTable;
+    use crate::sinks::ColumnType;
 
     #[test]
     fn closed_way_can_be_linestring() {
-        let geometry_cfg = config::GeometryConfig {
-            way: config::WaySetting::Enabled(WayGeometryMode::Linestring),
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Enabled(WayGeometryMode::Linestring),
             closed_way: ClosedWayMode::Linestring,
             node: true,
             relation: false,
@@ -335,9 +341,9 @@ mod tests {
 
     #[test]
     fn meta_columns_populate_feature_row() {
-        let columns = vec![config::ColumnConfig {
+        let columns = vec![CompiledColumn {
             name: "timestamp".to_string(),
-            source: "meta:timestamp".to_string(),
+            source: ColumnSource::Meta("timestamp".to_string()),
             col_type: ColumnType::String,
         }];
         let metadata = MetadataFields {
@@ -349,6 +355,15 @@ mod tests {
             uid: Some(3),
             user: Some("tester".to_string()),
         };
+        let config = CompiledConfig {
+            table: CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+            mappings: HashMap::new(),
+        };
         let row = build_feature_row(
             Geometry::Point(Point::new(0.0, 0.0)),
             &HashMap::new(),
@@ -356,6 +371,7 @@ mod tests {
             &RuntimeConfig::default(),
             Some(metadata),
             None,
+            &config,
         );
         assert!(matches!(
             row.columns.get("timestamp"),

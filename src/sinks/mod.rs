@@ -14,7 +14,9 @@ pub use self::geoparquet::GeoParquetSink;
 #[derive(Clone, Debug)]
 pub enum ColumnValue {
     String(String),
+    #[allow(dead_code)]
     Integer(i64),
+    #[allow(dead_code)]
     Float(f64),
     Json(serde_json::Value),
 }

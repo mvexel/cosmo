@@ -139,7 +139,7 @@ mod tests {
         let mut columns = HashMap::new();
         columns.insert("name".to_string(), ColumnValue::String("Test".to_string()));
         columns.insert("count".to_string(), ColumnValue::Integer(42));
-        columns.insert("value".to_string(), ColumnValue::Float(3.14));
+        columns.insert("value".to_string(), ColumnValue::Float(3.1));
 
         let row = FeatureRow {
             geometry: geo_types::Geometry::Point(point),
@@ -156,7 +156,7 @@ mod tests {
         let props = &parsed["properties"];
         assert_eq!(props["name"], "Test");
         assert_eq!(props["count"], 42);
-        assert!((props["value"].as_f64().unwrap() - 3.14).abs() < 1e-10);
+        assert!((props["value"].as_f64().unwrap() - 3.1).abs() < 1e-10);
     }
 
     #[test]

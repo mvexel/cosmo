@@ -25,3 +25,5 @@ tempfile = "3.20"
 time = { version = "0.3.37", features = ["formatting"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+winnow = "0.7"
+cel = "0.11"

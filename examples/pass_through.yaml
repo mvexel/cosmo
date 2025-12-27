@@ -1,14 +1,14 @@
-tables:
-  all:
-    # Empty filter matches everything
-    filter: {}
-    columns:
-      - name: "tags"
-        source: "tags"
-        type: "json"
-      - name: "meta"
-        source: "meta"
-        type: "json"
-      - name: "refs"
-        source: "refs"
-        type: "json"
+table:
+  name: all
+  # Empty string filter matches everything in DSL
+  filter: ""
+  columns:
+    - name: "tags"
+      source: "tags"
+      type: "json"
+    - name: "meta"
+      source: "meta"
+      type: "json"
+    - name: "refs"
+      source: "refs"
+      type: "json"

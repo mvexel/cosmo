@@ -1,25 +1,23 @@
-tables:
-  poi:
-    filter:
-      any:
-        - tag: "amenity"
-          value: "restaurant"
-        - tag: "amenity"
-          value: "cafe"
-        - tag: "amenity"
-          value: "bar"
-        - tag: "tourism"
-          value: "museum"
-        - tag: "tourism"
-          value: "art_gallery"
-        - tag: "shop"
-          value: "bookstore"
-    geometry:
-      closed_way: "centroid"
-    columns:
-      - name: "name"
-        source: "tag:name"
-        type: "string"
-      - name: "cuisine"
-        source: "tag:cuisine"
-        type: "string"
+# Simple POI extraction using the filter DSL
+#
+# This extracts restaurants, cafes, bars, museums, galleries, and bookstores.
+# Closed ways (like buildings) are converted to their centroid point.
+
+table:
+  name: poi
+  # DSL filter: match any of these amenity/tourism/shop values
+  # Syntax: tag=value1|value2|value3 matches any of the listed values
+  #         expr1 | expr2 is boolean OR between different tag conditions
+  filter: 'amenity=restaurant|cafe|bar | tourism=museum|art_gallery | shop=bookstore'
+
+  geometry:
+    closed_way: centroid
+
+  columns:
+    - name: name
+      source: tag:name
+      type: string
+
+    - name: cuisine
+      source: tag:cuisine
+      type: string

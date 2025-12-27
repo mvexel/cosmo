@@ -1,0 +1,114 @@
+# =============================================================================
+# POI (Points of Interest) Configuration
+# =============================================================================
+#
+# This configuration extracts named points of interest from OSM data and
+# classifies them into categories like "restaurant", "cafe", "retail", etc.
+#
+# This example demonstrates:
+#   - The filter DSL for tag matching
+#   - Mappings for first-match-wins classification
+#   - CEL expressions for computed values (localized names)
+#   - Geometry handling for nodes and building centroids
+#
+# =============================================================================
+
+mappings:
+  poi_class:
+    rules:
+      - match: 'amenity=restaurant|food_court|diner|bbq'
+        value: restaurant
+      - match: 'amenity=cafe|coffee_shop|tea'
+        value: cafe_bakery
+      - match: 'amenity=bar|pub|biergarten'
+        value: bar_pub
+      - match: 'amenity=fast_food|food_truck|ice_cream|street_vendor'
+        value: fast_food
+      - match: 'shop=ice_cream|dessert|frozen_yogurt'
+        value: ice_cream
+      - match: 'shop=supermarket|convenience|grocery|marketplace | amenity=marketplace'
+        value: grocery
+      - match: 'shop=bakery|butcher|cheese|confectionery|chocolate|deli|fishmonger|frozen_food|greengrocer|health_food|organic|pastry|tea|coffee'
+        value: specialty_food
+      - match: 'shop=mall|department_store|car|car_parts|car_accessories|clothes|fashion|shoes|electronics|computer|hardware|doityourself|furniture|jewelry|toys|books|gift|cosmetics|interior_decoration|variety_store|stationery|general|*'
+        value: retail
+      - match: 'amenity=spa|sauna|hairdresser|beauty_salon|laundry|dry_cleaning | shop=hairdresser|beauty|massage|cosmetics|laundry|tailor'
+        value: personal_services
+      - match: 'amenity=coworking_space|conference_centre | office=company|it|technology|lawyer|architect|estate_agent|accountant|tax_advisor|notary|consulting|insurance|ngo|research'
+        value: professional_services
+      - match: 'amenity=bank|atm|bureau_de_change|money_transfer'
+        value: finance
+      - match: 'tourism=hotel|guest_house|hostel|motel|apartment|chalet|alpine_hut|camp_site|caravan_site'
+        value: lodging
+      - match: 'amenity=bus_station|ferry_terminal|bus_terminal|airport | highway=bus_stop | railway=station|halt|stop|tram_stop|light_rail|subway_entrance|platform | public_transport=station|platform | aeroway=aerodrome|terminal|heliport|helipad|gate'
+        value: transport
+      - match: 'amenity=fuel|charging_station|car_wash|car_rental|car_sharing|car_repair|vehicle_inspection | shop=car_repair|tyres|car_parts|motorcycle|caravan'
+        value: auto_services
+      - match: 'amenity=parking|parking_entrance|parking_space|bicycle_parking|motorcycle_parking'
+        value: parking
+      - match: 'amenity=hospital|clinic|doctors|doctor|dentist|pharmacy|ambulance_station | healthcare=*'
+        value: healthcare
+      - match: 'amenity=school|kindergarten|college|university|music_school|language_school|library'
+        value: education
+      - match: 'amenity=townhall|courthouse|police|fire_station|post_office|embassy|customs | office=government|administrative|diplomatic'
+        value: government
+      - match: 'amenity=community_centre|social_centre|youth_centre|social_facility|shelter|soup_kitchen|public_bath|events_centre'
+        value: community
+      - match: 'amenity=place_of_worship|church|mosque|temple|synagogue|chapel|shrine'
+        value: religious
+      - match: 'tourism=museum|gallery|artwork | amenity=arts_centre|theatre|concert_hall|planetarium|cultural_center'
+        value: culture
+      - match: 'amenity=cinema|nightclub|casino|bowling_alley|amusement_arcade|stripclub | leisure=bowling_alley|disc_golf_course|escape_game|amusement_arcade|video_games'
+        value: entertainment
+      - match: 'leisure=sports_centre|fitness_centre|gym|swimming_pool|stadium|pitch|track|ice_rink|golf_course|tennis_court|basketball_court | sport=*'
+        value: sports_fitness
+      - match: 'leisure=park|garden|nature_reserve|common|playground|dog_park | amenity=picnic_table | tourism=picnic_site|viewpoint | natural=beach|wood|scrub | boundary=national_park'
+        value: parks_outdoors
+      - match: 'tourism=attraction|information | historic=monument|memorial|castle|ruins|archaeological_site | man_made=lighthouse|tower|obelisk|windmill|water_tower | amenity=fountain'
+        value: landmark
+      - match: 'amenity=veterinary|animal_boarding|animal_shelter | shop=pet|pet_grooming'
+        value: animal_services
+      - match: 'man_made=works|plant|power_wind|chimney|crane | power=plant|substation|generator | industrial=* | landuse=industrial'
+        value: industrial
+      - match: 'amenity | shop | leisure | tourism'
+        value: misc
+    default: null
+
+table:
+  name: pois
+  filter: 'name & (amenity | shop | leisure | tourism)'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: name
+      source: tag:name
+      type: string
+
+    # Localized name using CEL expression
+    # This tries name:en first, falls back to name
+    - name: name_en
+      source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+      type: string
+
+    - name: class
+      source: mapping:poi_class
+      type: string
+
+    - name: tags
+      source: tags
+      type: json
+
+    - name: osm_id
+      source: meta:id
+      type: integer
+
+    - name: version
+      source: meta:version
+      type: integer
+
+    - name: timestamp
+      source: meta:timestamp
+      type: string

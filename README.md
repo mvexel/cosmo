@@ -9,7 +9,7 @@
 #                                                        
 ```
 
-Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files in a bunch of other formats with optional filtering, which is arguably more useful.
+Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with optional filtering, which is arguably more useful.
 
 ## Usage
 
@@ -33,22 +33,26 @@ cosmo --input <input.osm.pbf> \
 
 ## Configuration Reference
 
-The configuration file (default: `filters.yaml`) defines how OSM data is processed. It consists of one or more "tables".
+The configuration file (default: `filters.yaml`) defines how OSM data is processed. It consists of a single "table" definition.
 
-### Filter Syntax
+### Filter DSL
 
-Filters determine which OSM features are included.
+Filters determine which OSM features are included. Cosmo uses a powerful filter DSL:
 
-- **Simple key-value:** `key: value` (implicit AND).
-- **Complex logic:** `any` (OR), `all` (AND), `not` (NOT).
-- **Tag matching:** 
-    - `tag`: The tag key to check.
-    - `value`: Exact match for the value.
-    - `values`: List of values. Supports globbing (e.g., `*_link` matches `motorway_link`).
+| Syntax | Description | Example |
+| :--- | :--- | :--- |
+| `key` | Matches if the tag exists | `highway` |
+| `key=value` | Exact match | `highway=primary` |
+| `key=v1\|v2` | Matches any of the pipe-separated values | `amenity=cafe\|restaurant` |
+| `expr1 & expr2` | Logical AND | `highway=primary & name` |
+| `expr1 \| expr2` | Logical OR | `amenity \| shop` |
+| `(expr)` | Grouping | `(amenity \| shop) & name` |
+
+For a full list of operators and syntax, see the [Filter YAML Guide](docs/filter_yaml_guide.md).
 
 ### Geometry Configuration
 
-Controls how geometries are constructed for each table:
+Controls how geometries are constructed for the table:
 
 - `way`: `linestring` (default), `polygon`, `centroid`, or `false` (disable).
 - `closed_way`: `polygon` (default), `centroid`, `linestring`. Applied to ways that start and end at the same node.
@@ -60,52 +64,52 @@ Controls how geometries are constructed for each table:
 Map OSM tags or metadata to output columns.
 
 - `type`: `string`, `integer`, `float`, or `json`.
-- `source: "tag:<key>"`: Extracts the value of the OSM tag `<key>`.
+- `source: "tag:<key>"`: (or just `"<key>"`) Extracts the value of the OSM tag `<key>`.
 - `source: "tags"`: Extracts all OSM tags as a JSON object.
 - `source: "meta"`: Extracts all metadata fields as a JSON object.
 - `source: "refs"`: Extracts way node references as a JSON array (ways only).
+- `source: "mapping:<name>"`: Categorizes features using a named mapping.
+- `source: "expr:<cel>"`: Computes a value using a [CEL expression](docs/filter_yaml_guide.md#cel-expressions).
 - `source: "meta:<field>"`: Extracts OSM metadata. Supported fields:
     - `id`: OSM ID (integer).
     - `version`: Version number (integer).
-    - `visible`: Visible flag (boolean).
-    - `changeset`: Changeset ID (integer).
     - `timestamp`: Modification timestamp (string, ISO 8601).
     - `uid`: User ID (integer).
     - `user`: User name (string).
 
+For more details on sources and advanced logic, see the [Filter YAML Guide](docs/filter_yaml_guide.md).
+
 ### Example Configuration
 
 ```yaml
-tables:
-  restaurants:
-    filter:
-      any:
-        - tag: "amenity"
-          value: "restaurant"
-    geometry:
-      way: "linestring"
-      closed_way: "centroid"
-      node: true
-      relation: false
-    columns:
-      - name: "name"
-        source: "tag:name"
-        type: "string"
-      - name: "cuisine"
-        source: "tag:cuisine"
-        type: "string"
-      - name: "phone"
-        source: "tag:phone"
-        type: "string"
-      - name: "website"
-        source: "tag:website"
-        type: "string"
-      - name: "opening_hours"
-        source: "tag:opening_hours"
-        type: "string"
-      - name: "osm_id"
-        source: "meta:id"
-        type: "integer"
+mappings:
+  poi_class:
+    rules:
+      - match: 'amenity=restaurant|food_court'
+        value: restaurant
+      - match: 'amenity=cafe|coffee_shop'
+        value: cafe
+    default: misc
+
+table:
+  name: pois
+  filter: 'name & (amenity=restaurant|food_court|cafe|coffee_shop)'
+  geometry:
+    node: true
+    way: centroid
+  columns:
+    - name: name
+      source: tag:name
+      type: string
+    - name: class
+      source: mapping:poi_class
+      type: string
+    - name: osm_id
+      source: meta:id
+      type: integer
+    - name: name_en
+      source: "expr:has(tags.name_en) ? tags.name_en : tags.name"
+      type: string
 ```
 
 ### Pass-through Configuration
@@ -113,19 +117,19 @@ tables:
 To export all features with their tags and metadata as JSON blobs (useful for raw data conversion):
 
 ```yaml
-tables:
-  all_features:
-    filter: {} # Empty filter matches everything
-    columns:
-      - name: tags
-        source: tags
-        type: json
-      - name: meta
-        source: meta
-        type: json
-      - name: refs
-        source: refs
-        type: json
+table:
+  name: all_features
+  filter: "" # Or {} - matches everything
+  columns:
+    - name: tags
+      source: tags
+      type: json
+    - name: meta
+      source: meta
+      type: json
+    - name: refs
+      source: refs
+      type: json
 ```
 
 Runtime flags for tweaking the node cache method:
@@ -199,3 +203,21 @@ GeoJSONL output writes one `Feature` per line and supports streaming to stdout w
 ## Developing Sinks
 
 See `docs/sinks.md` for the sink interface and implementation notes.
+
+## FAQ
+
+### Why not use osmosis/osmium/imposm/osm2pgsql?
+
+These tools are all great, but serve different purposes. osm2pgsql offers really good filtering with its Flex mode and Lua scripting, but it can only write to PostgreSQL. Imposm is similar. Osmosis and Osmium are focused on converting between OSM formats and have limited filtering and output options. What I was missing is a tool that can read an OSM PBF file, apply complex filters including tag manipulation, and write to non-OSM formats. Cosmo aims to fill that gap.
+
+### Why only GeoJSON, GeoJSONL, and GeoParquet outputs?
+
+Just pragmatic reasons. I need these formats for my work and wanted to build a tool that does them well. If you need other formats, please open an issue or contribute a sink!
+
+### Why not use the `gdal` crate?
+
+I could have, but GDAL is a pretty big dependency with a complex build process. I wanted to keep Cosmo lightweight and easy to build/install. Implementing sinks directly allows for more control and fewer dependencies.
+
+## License
+
+Cosmo is licensed under the Apache License 2.0. See the LICENSE file for details.

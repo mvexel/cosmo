@@ -3,15 +3,14 @@ use clap::{Parser, ValueEnum};
 use crossbeam_channel::bounded;
 use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::config::{FiltersConfig, NodeCacheMode, RuntimeConfig};
+use crate::config::{CompiledConfig, NodeCacheMode, RuntimeConfig};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
 use crate::sinks::{
-    ColumnSpec, ColumnType, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
+    ColumnSpec, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
 };
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
@@ -61,6 +60,7 @@ pub struct Cli {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum OutputFormat {
     #[value(name = "geojson")]
     GeoJson,
@@ -98,25 +98,15 @@ pub fn resolve_node_cache_mode(
     }
 }
 
-pub fn summarize_filters(filters: &FiltersConfig) -> (usize, usize, bool, bool, bool) {
-    let mut column_count = 0;
-    let mut any_node = false;
-    let mut any_way = false;
-    let mut any_relation = false;
-
-    for table in filters.tables.values() {
-        column_count += table.columns.len();
-        any_node |= table.geometry.node;
-        any_way |= table.geometry.way.enabled();
-        any_relation |= table.geometry.relation;
-    }
+pub fn summarize_filters_compiled(config: &CompiledConfig) -> (String, usize, bool, bool, bool) {
+    let table = &config.table;
 
     (
-        filters.tables.len(),
-        column_count,
-        any_node,
-        any_way,
-        any_relation,
+        table.name.clone(),
+        table.columns.len(),
+        table.geometry.node,
+        table.geometry.way.enabled(),
+        table.geometry.relation,
     )
 }
 
@@ -161,7 +151,7 @@ pub fn log_sorted_header(header: &HeaderBlock, logged: &Arc<AtomicBool>) {
 pub fn init_sink(
     format: &OutputFormat,
     output: &Path,
-    filters: &FiltersConfig,
+    config: &CompiledConfig,
 ) -> Result<Box<dyn DataSink + Send>> {
     match format {
         OutputFormat::GeoJson => {
@@ -186,7 +176,7 @@ pub fn init_sink(
             if output == Path::new("-") {
                 anyhow::bail!("CLI: Parquet output to stdout is not supported");
             }
-            let columns = collect_columns(filters)?;
+            let columns = collect_columns(config)?;
             tracing::info!(
                 "Sink: {} -> {:?} ({} columns)",
                 output_format_label(format),
@@ -198,41 +188,23 @@ pub fn init_sink(
     }
 }
 
-pub fn collect_columns(filters: &FiltersConfig) -> Result<Vec<ColumnSpec>> {
-    let mut columns: HashMap<String, ColumnType> = HashMap::new();
-    for table in filters.tables.values() {
-        for col in &table.columns {
-            let col_type = col.col_type;
-            match columns.get(&col.name) {
-                Some(existing) if *existing != col_type => {
-                    return Err(anyhow::anyhow!(
-                        "Config: Conflicting column types for {}: {:?} vs {:?}",
-                        col.name,
-                        existing,
-                        col_type
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    columns.insert(col.name.clone(), col_type);
-                }
-            }
-        }
-    }
-
-    let mut result: Vec<ColumnSpec> = columns
-        .into_iter()
-        .map(|(name, col_type)| ColumnSpec { name, col_type })
+pub fn collect_columns(config: &CompiledConfig) -> Result<Vec<ColumnSpec>> {
+    let table = &config.table;
+    let mut columns: Vec<ColumnSpec> = table
+        .columns
+        .iter()
+        .map(|col| ColumnSpec {
+            name: col.name.clone(),
+            col_type: col.col_type,
+        })
         .collect();
-    result.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(result)
+
+    columns.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(columns)
 }
 
-pub fn needs_node_store(filters: &FiltersConfig) -> bool {
-    filters
-        .tables
-        .values()
-        .any(|table| table.geometry.way.enabled() || table.geometry.relation)
+pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
+    config.table.geometry.way.enabled() || config.table.geometry.relation
 }
 
 pub fn pass1_index_nodes(
@@ -473,13 +445,13 @@ where
 
 pub fn pass2_process(
     path: &Path,
-    filters: Arc<FiltersConfig>,
+    config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     node_store: Arc<NodeStoreReader>,
     sink: SinkHandle,
 ) -> Result<u64> {
     let processor = Arc::new(StandardProcessor {
-        filters,
+        config,
         runtime,
         node_store,
     });
@@ -488,17 +460,17 @@ pub fn pass2_process(
 
 pub fn pass_nodes_only(
     path: &Path,
-    filters: Arc<FiltersConfig>,
+    config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     sink: SinkHandle,
 ) -> Result<u64> {
-    let processor = Arc::new(NodesOnlyProcessor { filters, runtime });
+    let processor = Arc::new(NodesOnlyProcessor { config, runtime });
     run_pass(path, processor, sink, "Single pass: blocks")
 }
 
 pub fn process_pbf(
     cli: &Cli,
-    filters: Arc<FiltersConfig>,
+    config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     sink: SinkHandle,
     needs_nodes: bool,
@@ -579,13 +551,13 @@ pub fn process_pbf(
         tracing::info!("Node cache ready.");
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
-        let result = pass2_process(&cli.input, filters, runtime, node_store, sink)?;
+        let result = pass2_process(&cli.input, config, runtime, node_store, sink)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 
         Ok(result)
     } else {
         tracing::info!("Single pass: Processing nodes (parallel)...");
-        pass_nodes_only(&cli.input, filters, runtime, sink)
+        pass_nodes_only(&cli.input, config, runtime, sink)
     }
 }

@@ -1,5 +1,8 @@
 mod app;
 mod config;
+mod dsl;
+mod expr;
+mod mapping;
 mod metadata;
 mod pipeline;
 mod sinks;
@@ -10,7 +13,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 
-use app::{Cli, OutputFormat, init_sink, needs_node_store, process_pbf, summarize_filters};
+use app::{Cli, OutputFormat, init_sink, needs_node_store_compiled, process_pbf, summarize_filters_compiled};
 use config::{FiltersConfig, RuntimeConfig};
 
 // anyhow::Result allows us to use ? operator in main to emit errors
@@ -55,13 +58,19 @@ fn main() -> Result<()> {
     Load filter config
     ******************
     */
-    let filters = Arc::new(FiltersConfig::load(&cli.filters)?);
+    let filters = FiltersConfig::load(&cli.filters)?;
+    let compiled = Arc::new(
+        filters
+            .compile()
+            .context("CLI: Failed to compile filter config")?,
+    );
 
     // feedback to user about the filters
-    let (table_count, col_count, has_node, has_way, has_rel) = summarize_filters(&filters);
+    let (table_name, col_count, has_node, has_way, has_rel) =
+        summarize_filters_compiled(&compiled);
     tracing::info!(
-        "Filters: {} tables, {} columns (nodes: {}, ways: {}, relations: {})",
-        table_count,
+        "Table: '{}' with {} columns (nodes: {}, ways: {}, relations: {})",
+        table_name,
         col_count,
         has_node,
         has_way,
@@ -103,7 +112,7 @@ fn main() -> Result<()> {
     Initialize selected sink
     ************************
     */
-    let sink = init_sink(&format, &cli.output, &filters)?;
+    let sink = init_sink(&format, &cli.output, &compiled)?;
     let sink_handle = Arc::new(std::sync::Mutex::new(sink));
 
     /*
@@ -111,9 +120,9 @@ fn main() -> Result<()> {
     Main processing pipeline
     ************************
     */
-    let needs_nodes = needs_node_store(&filters);
+    let needs_nodes = needs_node_store_compiled(&compiled);
     let start = std::time::Instant::now();
-    let match_count = process_pbf(&cli, filters, runtime, sink_handle.clone(), needs_nodes)?;
+    let match_count = process_pbf(&cli, compiled, runtime, sink_handle.clone(), needs_nodes)?;
 
     /*
     ********************

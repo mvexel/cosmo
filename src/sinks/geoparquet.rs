@@ -233,8 +233,8 @@ mod tests {
 
     #[test]
     fn coerce_string_from_float() {
-        let value = ColumnValue::Float(3.14);
-        assert_eq!(coerce_string(Some(&value)), Some("3.14".to_string()));
+        let value = ColumnValue::Float(3.1);
+        assert_eq!(coerce_string(Some(&value)), Some("3.1".to_string()));
     }
 
     #[test]
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn coerce_f64_from_float() {
-        let value = ColumnValue::Float(3.14);
-        assert_eq!(coerce_f64(Some(&value)), Some(3.14));
+        let value = ColumnValue::Float(3.1);
+        assert_eq!(coerce_f64(Some(&value)), Some(3.1));
     }
 
     #[test]
@@ -285,8 +285,8 @@ mod tests {
 
     #[test]
     fn coerce_f64_from_valid_string() {
-        let value = ColumnValue::String("3.14".to_string());
-        assert_eq!(coerce_f64(Some(&value)), Some(3.14));
+        let value = ColumnValue::String("3.1".to_string());
+        assert_eq!(coerce_f64(Some(&value)), Some(3.1));
     }
 
     #[test]
@@ -456,7 +456,7 @@ mod tests {
         let mut col_map = HashMap::new();
         col_map.insert("name".to_string(), ColumnValue::String("Test".to_string()));
         col_map.insert("population".to_string(), ColumnValue::Integer(1000));
-        col_map.insert("area".to_string(), ColumnValue::Float(123.45));
+        col_map.insert("area".to_string(), ColumnValue::Float(123.4));
 
         let row = FeatureRow {
             geometry: geo_types::Geometry::Point(point),
