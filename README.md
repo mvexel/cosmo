@@ -181,6 +181,8 @@ All CLI flags can be provided via environment variables using the `COSMO_` prefi
 
 GeoParquet output includes a `geometry` column (WKB) plus explicit columns from the filters YAML. A `properties` JSON column is also included for any extra fields (tags/metadata) not mapped to explicit columns.
 
+GeoParquet is not sorted spatially. Best practice in the geoparquet world is to use a Hilbert R-tree for spatial indexing. Cosmo does not do this. Chris Holmes has some practical advice [here](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+
 GeoJSONL output writes one `Feature` per line and supports streaming to stdout with `--output -` so you can do `cosmo --output - | tippecanoe` for example. Parquet and GeoJSON outputs do not support stdout. Input must be a file path (stdin is not supported).
 
 ## Developing Sinks
