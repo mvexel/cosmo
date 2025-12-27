@@ -193,7 +193,3 @@ Just pragmatic reasons. I need these formats for my work and wanted to build a t
 ### Why not use the `gdal` crate?
 
 I could have, but GDAL is a pretty big dependency with a complex build process. I wanted to keep Cosmo lightweight and easy to build/install. Implementing sinks directly allows for more control and fewer dependencies.
-
-## License
-
-Cosmo is licensed under the Apache License 2.0. See the LICENSE file for details.
