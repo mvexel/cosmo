@@ -149,36 +149,12 @@ The node cache stores node coordinates for resolving way geometries. It is rebui
 
 ### Cache Modes
 
-- **auto** (default): Automatically selects `sparse` or `dense` based on input file size.
-- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts. Uses sequential indexing to preserve sort order; requires sorted input (use `osmium sort` if needed).
-- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent. Uses parallel indexing for maximum speed.
+- **auto** (default): Automatically selects `sparse` or `dense` based on input file size. For PBF files smaller than 5GB, `sparse` is selected. For larger files, `dense` is selected. You can override this with `--node-cache-mode`.
+- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts. Uses sequential indexing to preserve sort order; **requires sorted input (use `osmium sort` if needed)**.
+- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent. Uses parallel indexing for maximum speed. The cache file is created as a **sparse file** with a virtual size of ~128 GiB (for 16B max nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file only consumes disk space for nodes actually present. For planet files, it will grow to ~90 GB.
 - **memory**: In-memory HashMap. No disk usage, but high RAM consumption. If you have a lot of RAM, you may be able to process the planet like this? (would be cool. I only have 16GB. Let me know.)
 
-### Auto-Selection
-
-By default (`--node-cache-mode auto`), the mode is selected based on input file size. For PBF files smaller than 5GB, `sparse` is selected. For larger files, `dense` is selected. You can override this with `--node-cache-mode`.
-
-The output tells you what was selected:
-```
-Node cache: sparse (auto-selected for 1.2 GB input)
-```
-
-### Why This Matters
-
-OSM node IDs are globally assigned (~13 billion max). Even a small city extract references IDs scattered across this range:
-
-| Mode | Storage | Lookup |
-|------|---------|--------|
-| **dense** | 8 bytes × max_node_id (~98 GB for planet) | O(1) direct indexing |
-| **sparse** | 16 bytes × actual_nodes (file-backed) | O(log n) binary search |
-
-For a US extract (1.49B nodes, 11% density), sparse uses ~22 GB vs dense's ~98 GB sparse file.
-
-### Dense Mode and Sparse Files
-
-When using `dense` mode, the cache file is created as a **sparse file** with a virtual size of ~128 GiB (for 16B max nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file only consumes disk space for nodes actually present. For planet files, it will grow to ~90 GB.
-
-**Warning:** Some file systems (FAT32) or network mounts (SMB/NFS) may not support sparse files and will attempt to allocate the full size immediately. Use `--node-cache-mode sparse` or `memory` in these cases.
+> Why these options? OSM node IDs are globally assigned. So, even a small city extract will have IDs scattered across the entire range (more than 10 billion nodes). But the smaller the extract, the sparser the node ID distribution. So for small extracts, using a sparse node cache with O(log n) binary search is faster than dense. For large extracts, dense mode is faster and actually uses less disk space. For memory mode, the node cache is stored as a regular HashMap, so you get O(1) lookups but at the cost of high RAM usage. The HashMap needs at least 24 bytes per node, but this can be significantly higher. I would not try to process the entire planet in memorty unless you have at least 384GB of RAM.
 
 ## Environment Variables
 
