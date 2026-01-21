@@ -30,17 +30,74 @@ cosmo --input <input.osm.pbf> \
   [--verbose]
 ```
 
-### Options
+### Command Line Options
 
-- `--output`: Output file path. Cosmo will automatically detect the format based on the extension of the output file. Supported formats: `geojson`, `geojsonl`, `parquet`. Cosmo will automatically detect the format based on the extension of the output file. If you want to explicitly specify the format, use the `--format` option.
-- `--all-tags`: Include all original OSM tags in the output 'tags' property (JSON object), in addition to any explicit columns.
-- `--verbose`: Enable detailed logging.
+#### Required Options
 
-Some advanced options are available, see `cosmo --help` for details.
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--input <PATH>` | `-i` | Input OSM PBF file path |
+| `--output <PATH>` | `-o` | Output file path (format auto-detected from extension: `.geojson`, `.geojsonl`, `.parquet`) |
+| `--filters <PATH>` | `-f` | Filter configuration file (YAML) |
 
-## Configuration Reference
+#### Output Options
 
-The configuration file (default: `filters.yaml`) defines how OSM data is processed. It consists of a single "table" definition.
+| Option | Description |
+|--------|-------------|
+| `--format <FORMAT>` | Explicitly specify output format: `geojson`, `geojsonl`, or `parquet` (overrides auto-detection) |
+| `--all-tags` | Include all original OSM tags in the output 'tags' property (JSON object), in addition to explicitly configured columns |
+
+#### Filtering Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--bbox <BBOX>` | Bounding box filter: only output features with geometries intersecting this box | `--bbox -122.5,37.7,-122.3,37.8` |
+
+Format: `min_lon,min_lat,max_lon,max_lat` (WGS84 decimal degrees)
+
+#### Performance Options
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--jobs <N>` | `-j` | Number of parallel jobs to run | All available CPU cores |
+
+#### Node Cache Options
+
+OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates when building way geometries. The node cache is built during the first pass through the PBF file and used during the second pass. Three strategies are available:
+
+- **sparse**: Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. Requires sorted input. PBF files downloaded from OSM or GeoFabrik are sorted. If you are unsure, use `osmium sort`.
+- **dense**: Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent).
+- **memory**: In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node).
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--node-cache-mode <MODE>` | Cache strategy: `auto`, `sparse`, `dense`, or `memory` | `auto` (selects `sparse` for files <5GB, `dense` for ≥5GB) |
+| `--node-cache <PATH>` | Custom path for dense mode cache file (otherwise uses temp file with auto-cleanup) | Temporary file |
+| `--node-cache-max-nodes <N>` | Maximum node ID to allocate space for in dense mode | 16,000,000,000 |
+
+#### Logging Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--verbose` | `-v` | Enable detailed logging output |
+
+#### Full Example
+
+```bash
+cosmo \
+  --input utah-latest.osm.pbf \
+  --output pois.parquet \
+  --filters poi_filters.yaml \
+  --bbox -112.1,40.5,-111.8,40.8 \
+  --all-tags \
+  --jobs 8 \
+  --node-cache-mode sparse \
+  --verbose
+```
+
+## Filter Configuration Reference
+
+The filter configuration file (default: `filters.yaml`) defines how OSM data is processed. It consists of a single "table" definition.
 
 ### Filter DSL
 
