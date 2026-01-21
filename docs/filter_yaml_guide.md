@@ -13,7 +13,7 @@ This guide provides a comprehensive reference for writing filter configurations 
 
 ## Filter DSL Syntax
 
-The filter DSL is a YAML-based expression language for matching OSM tags. Filters are written as strings using the following operators and syntax:
+The filter DSL is a string-based expression language for matching OSM tags and metadata, configured via YAML.
 
 ### Basic Tag Operations
 
