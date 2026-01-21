@@ -90,6 +90,8 @@ pub struct RuntimeConfig {
     pub node_cache_mode: NodeCacheMode,
     pub node_cache_max_nodes: u64,
     pub all_tags: bool,
+    /// Optional bounding box filter: [min_lon, min_lat, max_lon, max_lat]
+    pub bbox: Option<[f64; 4]>,
 }
 
 impl Default for RuntimeConfig {
@@ -99,6 +101,7 @@ impl Default for RuntimeConfig {
             // OSM has ~10.3B nodes as of 2025; use generous headroom to skip prepass scan
             node_cache_max_nodes: DEFAULT_MAX_NODES,
             all_tags: false,
+            bbox: None,
         }
     }
 }
@@ -485,6 +488,7 @@ mod tests {
         assert!(matches!(config.node_cache_mode, NodeCacheMode::Auto));
         assert_eq!(config.node_cache_max_nodes, 16_000_000_000);
         assert!(!config.all_tags);
+        assert!(config.bbox.is_none());
     }
 
     // ============================================

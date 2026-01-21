@@ -13,7 +13,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 
-use app::{Cli, OutputFormat, init_sink, needs_node_store_compiled, process_pbf, summarize_filters_compiled};
+use app::{
+    Cli, OutputFormat, init_sink, needs_node_store_compiled, process_pbf,
+    summarize_filters_compiled,
+};
 use config::{FiltersConfig, RuntimeConfig};
 
 // anyhow::Result allows us to use ? operator in main to emit errors
@@ -46,9 +49,9 @@ fn main() -> Result<()> {
     Initialize thread pool
     *********************
     */
-    if let Some(threads) = cli.threads {
+    if let Some(jobs) = cli.jobs {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
+            .num_threads(jobs)
             .build_global()
             .context("CLI: Failed to initialize thread pool")?;
     }
@@ -66,8 +69,7 @@ fn main() -> Result<()> {
     );
 
     // feedback to user about the filters
-    let (table_name, col_count, has_node, has_way, has_rel) =
-        summarize_filters_compiled(&compiled);
+    let (table_name, col_count, has_node, has_way, has_rel) = summarize_filters_compiled(&compiled);
     tracing::info!(
         "Table: '{}' with {} columns (nodes: {}, ways: {}, relations: {})",
         table_name,
@@ -91,7 +93,19 @@ fn main() -> Result<()> {
             .node_cache_max_nodes
             .unwrap_or(runtime_defaults.node_cache_max_nodes),
         all_tags: cli.all_tags,
+        bbox: cli.bbox,
     });
+
+    // Log bbox filter if active
+    if let Some([min_lon, min_lat, max_lon, max_lat]) = runtime.bbox {
+        tracing::info!(
+            "Bbox filter: [{}, {}, {}, {}]",
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat
+        );
+    }
 
     // Detect format from extension if not provided
     let format = cli
