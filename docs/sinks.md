@@ -37,6 +37,6 @@ fn finish(&mut self) -> Result<()>;
 1) Create a new file in `src/sinks/` (e.g., `flatgeobuf.rs`).
 2) Implement `DataSink` for your type.
 3) Register the module + re-export in `src/sinks/mod.rs`.
-4) Update `OutputFormat` in `src/main.rs` and add a constructor in `init_sink`.
+4) Update `OutputFormat` in `src/app/mod.rs` and add a constructor in `init_sink`.
 
 Keep output deterministic and avoid side effects in `add_feature` beyond writing.

@@ -11,7 +11,11 @@
 ```
 cosmo/
 ├── src/
-│   ├── main.rs              # CLI entrypoint, PBF processing pipeline (1249 lines)
+│   ├── main.rs              # CLI entrypoint
+│   ├── app/
+│   │   └── mod.rs           # CLI argument parsing, application logic
+│   ├── pipeline/
+│   │   └── mod.rs           # PBF processing pipeline logic
 │   ├── config/
 │   │   └── mod.rs           # YAML configuration parsing, filter/geometry/column types
 │   ├── sinks/
@@ -73,6 +77,8 @@ Key dependencies (see `Cargo.toml`):
 | `clap` | CLI parsing with env var support |
 | `serde`, `config` | YAML configuration parsing |
 | `memmap2` | Memory-mapped file I/O for dense cache |
+| `cel` | Common Expression Language for computed columns |
+| `proj` | Coordinate projection support |
 
 ## Configuration Reference
 
@@ -90,7 +96,7 @@ tables:
       relation: true/false
     columns:
       - name: "<output_column>"
-        source: "tag:<key>" | "meta:<field>" | "tags" | "meta" | "refs"
+        source: "tag:<key>" | "meta:<field>" | "tags" | "meta" | "refs" | "cel:<expr>"
         type: "string" | "integer" | "float" | "json"
 ```
 
