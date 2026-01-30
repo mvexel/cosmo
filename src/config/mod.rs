@@ -618,8 +618,8 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let roads = &config.table;
-        assert_eq!(roads.name, "roads");
+        let roads = config.table.as_ref().unwrap();
+        assert_eq!(roads.name.as_deref(), Some("roads"));
         assert_eq!(roads.columns.len(), 1);
         assert_eq!(roads.columns[0].name, "name");
         assert_eq!(roads.columns[0].source, "tag:name");
@@ -642,7 +642,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let trees = &config.table;
+        let trees = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::Tag(tag_match)) = &trees.filter {
             assert_eq!(tag_match.tag, "natural");
             assert_eq!(tag_match.value, Some("tree".to_string()));
@@ -670,7 +670,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let amenities = &config.table;
+        let amenities = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::Tag(tag_match)) = &amenities.filter {
             assert_eq!(tag_match.tag, "amenity");
             assert_eq!(tag_match.values, vec!["cafe", "restaurant", "bar"]);
@@ -696,7 +696,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let pois = &config.table;
+        let pois = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::Any { any }) = &pois.filter {
             assert_eq!(any.len(), 2);
         } else {
@@ -721,7 +721,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let named_roads = &config.table;
+        let named_roads = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::All { all }) = &named_roads.filter {
             assert_eq!(all.len(), 2);
         } else {
@@ -746,7 +746,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let non_residential = &config.table;
+        let non_residential = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::Not { not }) = &non_residential.filter {
             if let FilterExpr::Tag(tag_match) = not.as_ref() {
                 assert_eq!(tag_match.tag, "building");
@@ -779,7 +779,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let roads = &config.table;
+        let roads = config.table.as_ref().unwrap();
         assert!(!roads.geometry.node);
         assert!(!roads.geometry.relation);
         assert!(roads.geometry.way.enabled());
@@ -808,7 +808,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let points = &config.table;
+        let points = config.table.as_ref().unwrap();
         assert!(points.geometry.node);
         assert!(!points.geometry.way.enabled());
         assert!(!points.geometry.relation);
@@ -838,7 +838,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let roads = &config.table;
+        let roads = config.table.as_ref().unwrap();
         assert_eq!(roads.columns.len(), 4);
         assert_eq!(roads.columns[0].col_type, ColumnType::Integer);
         assert_eq!(roads.columns[1].col_type, ColumnType::String);
@@ -887,7 +887,7 @@ table:
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let roads = &config.table;
+        let roads = config.table.as_ref().unwrap();
         if let FilterInput::Structured(FilterExpr::Simple(map)) = &roads.filter {
             assert_eq!(map.get("highway"), Some(&"primary".to_string()));
         } else {

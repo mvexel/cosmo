@@ -421,13 +421,18 @@ mod tests {
             uid: Some(3),
             user: Some("tester".to_string()),
         };
-        let config = CompiledConfig {
-            table: CompiledTable {
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
                 name: "test".to_string(),
                 filter: crate::dsl::FilterAst::True,
                 columns: Vec::new(),
                 geometry: crate::config::GeometryConfig::default(),
             },
+        );
+        let config = CompiledConfig {
+            tables,
             mappings: HashMap::new(),
         };
         let row = build_feature_row(
