@@ -1,0 +1,744 @@
+# =============================================================================
+# POI (Points of Interest) Configuration - Multiple Tables
+# =============================================================================
+#
+# This configuration extracts named points of interest from OSM data and
+# outputs each category as a separate table/layer.
+#
+# This example demonstrates:
+#   - Multiple table definitions (one per category)
+#   - Category-specific filtering
+#   - CEL expressions for computed values (localized names)
+#   - Geometry handling for nodes and building centroids
+#
+# =============================================================================
+
+tables:
+  restaurants:
+    filter: 'name & (amenity=restaurant|food_court|diner|bbq)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  cafes_bakeries:
+    filter: 'name & (amenity=cafe|coffee_shop|tea)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  bars_pubs:
+    filter: 'name & (amenity=bar|pub|biergarten)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  fast_food:
+    filter: 'name & (amenity=fast_food|food_truck|ice_cream|street_vendor)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  ice_cream:
+    filter: 'name & (shop=ice_cream|dessert|frozen_yogurt)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  grocery:
+    filter: 'name & (shop=supermarket|convenience|grocery|marketplace | amenity=marketplace)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  specialty_food:
+    filter: 'name & (shop=bakery|butcher|cheese|confectionery|chocolate|deli|fishmonger|frozen_food|greengrocer|health_food|organic|pastry|tea|coffee)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  retail:
+    filter: 'name & (shop=mall|department_store|car|car_parts|car_accessories|clothes|fashion|shoes|electronics|computer|hardware|doityourself|furniture|jewelry|toys|books|gift|cosmetics|interior_decoration|variety_store|stationery|general|*)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  personal_services:
+    filter: 'name & (amenity=spa|sauna|hairdresser|beauty_salon|laundry|dry_cleaning | shop=hairdresser|beauty|massage|cosmetics|laundry|tailor)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  professional_services:
+    filter: 'name & (amenity=coworking_space|conference_centre | office=company|it|technology|lawyer|architect|estate_agent|accountant|tax_advisor|notary|consulting|insurance|ngo|research)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  finance:
+    filter: 'name & (amenity=bank|atm|bureau_de_change|money_transfer)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  lodging:
+    filter: 'name & (tourism=hotel|guest_house|hostel|motel|apartment|chalet|alpine_hut|camp_site|caravan_site)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  transport:
+    filter: 'name & (amenity=bus_station|ferry_terminal|bus_terminal|airport | highway=bus_stop | railway=station|halt|stop|tram_stop|light_rail|subway_entrance|platform | public_transport=station|platform | aeroway=aerodrome|terminal|heliport|helipad|gate)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  auto_services:
+    filter: 'name & (amenity=fuel|charging_station|car_wash|car_rental|car_sharing|car_repair|vehicle_inspection | shop=car_repair|tyres|car_parts|motorcycle|caravan)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  parking:
+    filter: 'name & (amenity=parking|parking_entrance|parking_space|bicycle_parking|motorcycle_parking)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  healthcare:
+    filter: 'name & (amenity=hospital|clinic|doctors|doctor|dentist|pharmacy|ambulance_station | healthcare=*)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  education:
+    filter: 'name & (amenity=school|kindergarten|college|university|music_school|language_school|library)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  government:
+    filter: 'name & (amenity=townhall|courthouse|police|fire_station|post_office|embassy|customs | office=government|administrative|diplomatic)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  community:
+    filter: 'name & (amenity=community_centre|social_centre|youth_centre|social_facility|shelter|soup_kitchen|public_bath|events_centre)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  religious:
+    filter: 'name & (amenity=place_of_worship|church|mosque|temple|synagogue|chapel|shrine)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  culture:
+    filter: 'name & (tourism=museum|gallery|artwork | amenity=arts_centre|theatre|concert_hall|planetarium|cultural_center)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  entertainment:
+    filter: 'name & (amenity=cinema|nightclub|casino|bowling_alley|amusement_arcade|stripclub | leisure=bowling_alley|disc_golf_course|escape_game|amusement_arcade|video_games)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  sports_fitness:
+    filter: 'name & (leisure=sports_centre|fitness_centre|gym|swimming_pool|stadium|pitch|track|ice_rink|golf_course|tennis_court|basketball_court | sport=*)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  parks_outdoors:
+    filter: 'name & (leisure=park|garden|nature_reserve|common|playground|dog_park | amenity=picnic_table | tourism=picnic_site|viewpoint | natural=beach|wood|scrub | boundary=national_park)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  landmarks:
+    filter: 'name & (tourism=attraction|information | historic=monument|memorial|castle|ruins|archaeological_site | man_made=lighthouse|tower|obelisk|windmill|water_tower | amenity=fountain)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  animal_services:
+    filter: 'name & (amenity=veterinary|animal_boarding|animal_shelter | shop=pet|pet_grooming)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
+
+  industrial:
+    filter: 'name & (man_made=works|plant|power_wind|chimney|crane | power=plant|substation|generator | industrial=* | landuse=industrial)'
+    geometry:
+      node: true
+      way: centroid
+      closed_way: centroid
+      relation: false
+    columns:
+      - name: name
+        source: tag:name
+        type: string
+      - name: name_en
+        source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'
+        type: string
+      - name: tags
+        source: tags
+        type: json
+      - name: osm_id
+        source: meta:id
+        type: integer
+      - name: version
+        source: meta:version
+        type: integer
+      - name: timestamp
+        source: meta:timestamp
+        type: string
