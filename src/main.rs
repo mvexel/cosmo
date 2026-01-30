@@ -11,10 +11,11 @@ mod utils;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use app::{
-    Cli, OutputFormat, init_sink, needs_node_store_compiled, process_pbf,
+    Cli, OutputFormat, init_sink, init_sinks, needs_node_store_compiled, process_pbf,
     summarize_filters_compiled,
 };
 use config::{FiltersConfig, RuntimeConfig};
@@ -69,15 +70,20 @@ fn main() -> Result<()> {
     );
 
     // feedback to user about the filters
-    let (table_name, col_count, has_node, has_way, has_rel) = summarize_filters_compiled(&compiled);
-    tracing::info!(
-        "Table: '{}' with {} columns (nodes: {}, ways: {}, relations: {})",
-        table_name,
-        col_count,
-        has_node,
-        has_way,
-        has_rel
-    );
+    let summary = summarize_filters_compiled(&compiled);
+    tracing::info!("Config: {}", summary);
+
+    // Log each table's details
+    for (table_name, table) in &compiled.tables {
+        tracing::info!(
+            "  - Table '{}': {} columns (nodes: {}, ways: {}, relations: {})",
+            table_name,
+            table.columns.len(),
+            table.geometry.node,
+            table.geometry.way.enabled(),
+            table.geometry.relation
+        );
+    }
 
     /*
     *************************
@@ -123,11 +129,20 @@ fn main() -> Result<()> {
 
     /*
     ************************
-    Initialize selected sink
+    Initialize sink(s)
     ************************
     */
-    let sink = init_sink(&format, &cli.output, &compiled)?;
-    let sink_handle = Arc::new(std::sync::Mutex::new(sink));
+    let sinks = if compiled.tables.len() == 1 {
+        // Single table mode: support stdout and file output
+        let (table_name, _) = compiled.tables.iter().next().unwrap();
+        let sink = init_sink(&format, &cli.output, &compiled)?;
+        let mut map = HashMap::new();
+        map.insert(table_name.clone(), Arc::new(Mutex::new(sink)));
+        map
+    } else {
+        // Multi-table mode: require directory
+        init_sinks(&format, &cli.output, &compiled)?
+    };
 
     /*
     ************************
@@ -136,25 +151,29 @@ fn main() -> Result<()> {
     */
     let needs_nodes = needs_node_store_compiled(&compiled);
     let start = std::time::Instant::now();
-    let match_count = process_pbf(&cli, compiled, runtime, sink_handle.clone(), needs_nodes)?;
+    let match_counts = process_pbf(&cli, compiled, runtime, sinks.clone(), needs_nodes)?;
 
     /*
     ********************
     Clean up and metrics
     ********************
     */
-    {
-        let mut sink = sink_handle.lock().unwrap();
-        sink.finish().context("Pipeline: Failed to finalize sink")?;
+    for sink in sinks.values() {
+        let mut s = sink.lock().unwrap();
+        s.finish().context("Pipeline: Failed to finalize sink")?;
     }
 
     let elapsed = start.elapsed();
+    let total_features: u64 = match_counts.values().sum();
     tracing::info!(
-        "Done! Written {} features in {:.2}s ({} features/s)",
-        match_count,
+        "Done! Processed {} total features in {:.2}s ({} features/s)",
+        total_features,
         elapsed.as_secs_f64(),
-        (match_count as f64 / elapsed.as_secs_f64()) as u64
+        (total_features as f64 / elapsed.as_secs_f64()) as u64
     );
+    for (table_name, count) in &match_counts {
+        tracing::info!("  - Table '{}': {} features", table_name, count);
+    }
 
     Ok(())
 }

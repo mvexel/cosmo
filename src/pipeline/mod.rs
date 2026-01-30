@@ -60,7 +60,7 @@ fn geometry_intersects_bbox(geometry: &Geometry<f64>, bbox: Option<[f64; 4]>) ->
 }
 
 pub trait BlockProcessor: Send + Sync {
-    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>>;
+    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<(String, FeatureRow)>>;
 }
 
 pub struct StandardProcessor {
@@ -70,7 +70,7 @@ pub struct StandardProcessor {
 }
 
 impl BlockProcessor for StandardProcessor {
-    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>> {
+    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<(String, FeatureRow)>> {
         process_block_collect(block, &self.config, &self.runtime, &self.node_store)
     }
 }
@@ -81,7 +81,7 @@ pub struct NodesOnlyProcessor {
 }
 
 impl BlockProcessor for NodesOnlyProcessor {
-    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<FeatureRow>> {
+    fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<(String, FeatureRow)>> {
         process_block_nodes_only_collect(block, &self.config, &self.runtime)
     }
 }
@@ -234,74 +234,83 @@ pub fn process_block_collect(
     config: &CompiledConfig,
     runtime: &RuntimeConfig,
     node_store: &NodeStoreReader,
-) -> Result<Vec<FeatureRow>> {
+) -> Result<Vec<(String, FeatureRow)>> {
     let mut rows = Vec::new();
-    let table = &config.table;
 
     for element in block.elements() {
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
-                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                    let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                    if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                        let row = build_feature_row(
-                            geometry,
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            Some(build_metadata_from_info(node.id(), &node.info())),
-                            None,
-                            config,
-                        );
-                        rows.push(row);
-                    }
-                }
-            }
-            Element::DenseNode(node) => {
-                let tag_map = build_tag_map(node.tags());
-                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                    let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                    if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                        let metadata = node
-                            .info()
-                            .map(|info| build_metadata_from_dense_info(node.id(), info));
-                        let row = build_feature_row(
-                            geometry,
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            metadata,
-                            None,
-                            config,
-                        );
-                        rows.push(row);
-                    }
-                }
-            }
-            Element::Way(way) => {
-                let tag_map = build_tag_map(way.tags());
-                if table.geometry.way.enabled() && evaluate_filter(&table.filter, &tag_map) {
-                    let refs: Vec<i64> = way.refs().collect();
-                    let coords: Vec<(f64, f64)> = refs
-                        .iter()
-                        .filter_map(|&id| node_store.get(id as u64))
-                        .collect();
 
-                    if coords.len() >= 2 {
-                        let line_string = LineString::from(coords.clone());
-                        let geometry = build_way_geometry(&table.geometry, line_string, &coords);
+                // Evaluate ALL table filters
+                for (table_name, table) in &config.tables {
+                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
                         if geometry_intersects_bbox(&geometry, runtime.bbox) {
                             let row = build_feature_row(
                                 geometry,
                                 &tag_map,
                                 &table.columns,
                                 runtime,
-                                Some(build_metadata_from_info(way.id(), &way.info())),
-                                Some(refs),
+                                Some(build_metadata_from_info(node.id(), &node.info())),
+                                None,
                                 config,
                             );
-                            rows.push(row);
+                            rows.push((table_name.clone(), row));
+                        }
+                    }
+                }
+            }
+            Element::DenseNode(node) => {
+                let tag_map = build_tag_map(node.tags());
+
+                for (table_name, table) in &config.tables {
+                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let metadata = node
+                                .info()
+                                .map(|info| build_metadata_from_dense_info(node.id(), info));
+                            let row = build_feature_row(
+                                geometry,
+                                &tag_map,
+                                &table.columns,
+                                runtime,
+                                metadata,
+                                None,
+                                config,
+                            );
+                            rows.push((table_name.clone(), row));
+                        }
+                    }
+                }
+            }
+            Element::Way(way) => {
+                let tag_map = build_tag_map(way.tags());
+
+                for (table_name, table) in &config.tables {
+                    if table.geometry.way.enabled() && evaluate_filter(&table.filter, &tag_map) {
+                        let refs: Vec<i64> = way.refs().collect();
+                        let coords: Vec<(f64, f64)> = refs
+                            .iter()
+                            .filter_map(|&id| node_store.get(id as u64))
+                            .collect();
+
+                        if coords.len() >= 2 {
+                            let line_string = LineString::from(coords.clone());
+                            let geometry = build_way_geometry(&table.geometry, line_string, &coords);
+                            if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                                let row = build_feature_row(
+                                    geometry,
+                                    &tag_map,
+                                    &table.columns,
+                                    runtime,
+                                    Some(build_metadata_from_info(way.id(), &way.info())),
+                                    Some(refs),
+                                    config,
+                                );
+                                rows.push((table_name.clone(), row));
+                            }
                         }
                     }
                 }
@@ -319,48 +328,53 @@ pub fn process_block_nodes_only_collect(
     block: PrimitiveBlock,
     config: &CompiledConfig,
     runtime: &RuntimeConfig,
-) -> Result<Vec<FeatureRow>> {
+) -> Result<Vec<(String, FeatureRow)>> {
     let mut rows = Vec::new();
-    let table = &config.table;
 
     for element in block.elements() {
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
-                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                    let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                    if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                        let row = build_feature_row(
-                            geometry,
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            Some(build_metadata_from_info(node.id(), &node.info())),
-                            None,
-                            config,
-                        );
-                        rows.push(row);
+
+                for (table_name, table) in &config.tables {
+                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let row = build_feature_row(
+                                geometry,
+                                &tag_map,
+                                &table.columns,
+                                runtime,
+                                Some(build_metadata_from_info(node.id(), &node.info())),
+                                None,
+                                config,
+                            );
+                            rows.push((table_name.clone(), row));
+                        }
                     }
                 }
             }
             Element::DenseNode(node) => {
                 let tag_map = build_tag_map(node.tags());
-                if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                    let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                    if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                        let metadata = node
-                            .info()
-                            .map(|info| build_metadata_from_dense_info(node.id(), info));
-                        let row = build_feature_row(
-                            geometry,
-                            &tag_map,
-                            &table.columns,
-                            runtime,
-                            metadata,
-                            None,
-                            config,
-                        );
-                        rows.push(row);
+
+                for (table_name, table) in &config.tables {
+                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let metadata = node
+                                .info()
+                                .map(|info| build_metadata_from_dense_info(node.id(), info));
+                            let row = build_feature_row(
+                                geometry,
+                                &tag_map,
+                                &table.columns,
+                                runtime,
+                                metadata,
+                                None,
+                                config,
+                            );
+                            rows.push((table_name.clone(), row));
+                        }
                     }
                 }
             }

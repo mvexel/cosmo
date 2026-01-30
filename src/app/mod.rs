@@ -3,15 +3,18 @@ use clap::{Parser, ValueEnum};
 use crossbeam_channel::bounded;
 use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::config::{CompiledConfig, NodeCacheMode, RuntimeConfig};
+use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
 use crate::sinks::{ColumnSpec, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink};
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
+
+pub type SinkMap = HashMap<String, Arc<Mutex<Box<dyn DataSink + Send>>>>;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -58,7 +61,7 @@ pub struct Cli {
 
     /// Bounding box filter: min_lon,min_lat,max_lon,max_lat
     /// Only output features with geometry within this bbox
-    #[arg(long, value_parser = parse_bbox)]
+    #[arg(long, value_parser = parse_bbox, allow_hyphen_values = true)]
     pub bbox: Option<[f64; 4]>,
 }
 
@@ -138,15 +141,23 @@ pub fn resolve_node_cache_mode(
     }
 }
 
-pub fn summarize_filters_compiled(config: &CompiledConfig) -> (String, usize, bool, bool, bool) {
-    let table = &config.table;
+pub fn summarize_filters_compiled(config: &CompiledConfig) -> String {
+    let table_count = config.tables.len();
+    let mut total_cols = 0;
+    let mut has_node = false;
+    let mut has_way = false;
+    let mut has_rel = false;
 
-    (
-        table.name.clone(),
-        table.columns.len(),
-        table.geometry.node,
-        table.geometry.way.enabled(),
-        table.geometry.relation,
+    for table in config.tables.values() {
+        total_cols += table.columns.len();
+        has_node |= table.geometry.node;
+        has_way |= table.geometry.way.enabled();
+        has_rel |= table.geometry.relation;
+    }
+
+    format!(
+        "{} table(s), {} total columns (nodes: {}, ways: {}, relations: {})",
+        table_count, total_cols, has_node, has_way, has_rel
     )
 }
 
@@ -228,8 +239,67 @@ pub fn init_sink(
     }
 }
 
+pub fn init_sinks(
+    format: &OutputFormat,
+    output_dir: &Path,
+    config: &CompiledConfig,
+) -> Result<SinkMap> {
+    // Validate output is not stdout for multi-table
+    if output_dir == Path::new("-") {
+        anyhow::bail!(
+            "Multi-table output to stdout is not supported; specify a directory path"
+        );
+    }
+
+    // Create output directory if it doesn't exist
+    if !output_dir.exists() {
+        std::fs::create_dir_all(output_dir)
+            .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
+        tracing::info!("Created output directory: {:?}", output_dir);
+    } else if !output_dir.is_dir() {
+        anyhow::bail!("Output path exists but is not a directory: {:?}", output_dir);
+    }
+
+    let mut sinks = HashMap::new();
+    let extension = match format {
+        OutputFormat::GeoJson => "geojson",
+        OutputFormat::GeoJsonl => "geojsonl",
+        OutputFormat::GeoParquet => "parquet",
+    };
+
+    for (table_name, table_config) in &config.tables {
+        let file_path = output_dir.join(format!("{}.{}", table_name, extension));
+
+        let sink: Box<dyn DataSink + Send> = match format {
+            OutputFormat::GeoJson => Box::new(GeoJsonSink::new(&file_path)?),
+            OutputFormat::GeoJsonl => Box::new(GeoJsonlSink::new(&file_path)?),
+            OutputFormat::GeoParquet => {
+                let columns = collect_columns_for_table(table_config)?;
+                Box::new(GeoParquetSink::new(&file_path, columns)?)
+            }
+        };
+
+        tracing::info!(
+            "Sink: {} -> {:?} ({} columns)",
+            table_name,
+            file_path,
+            table_config.columns.len()
+        );
+
+        sinks.insert(table_name.clone(), Arc::new(Mutex::new(sink)));
+    }
+
+    Ok(sinks)
+}
+
 pub fn collect_columns(config: &CompiledConfig) -> Result<Vec<ColumnSpec>> {
-    let table = &config.table;
+    // For single table compatibility, get the first (and only) table
+    let table = config.tables.values().next()
+        .ok_or_else(|| anyhow!("No tables defined in config"))?;
+    collect_columns_for_table(table)
+}
+
+fn collect_columns_for_table(table: &CompiledTable) -> Result<Vec<ColumnSpec>> {
     let mut columns: Vec<ColumnSpec> = table
         .columns
         .iter()
@@ -244,7 +314,9 @@ pub fn collect_columns(config: &CompiledConfig) -> Result<Vec<ColumnSpec>> {
 }
 
 pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
-    config.table.geometry.way.enabled() || config.table.geometry.relation
+    config.tables.values().any(|table| {
+        table.geometry.way.enabled() || table.geometry.relation
+    })
 }
 
 pub fn pass1_index_nodes(
@@ -396,27 +468,32 @@ pub fn pass1_index_nodes(
 pub fn run_pass<P>(
     path: &Path,
     processor: Arc<P>,
-    sink: SinkHandle,
+    sinks: SinkMap,
     label: &'static str,
-) -> Result<u64>
+) -> Result<HashMap<String, u64>>
 where
     P: BlockProcessor + 'static,
 {
     let reader = BlobReader::from_path(path)?;
-    let (tx, rx) = bounded::<Vec<FeatureRow>>(64);
+    let (tx, rx) = bounded::<Vec<(String, FeatureRow)>>(64);
     let progress = Arc::new(ProgressCounter::new(label, 100));
 
-    let sink_handle = sink.clone();
-    let writer = std::thread::spawn(move || -> Result<u64> {
-        let mut sink = sink_handle.lock().unwrap();
-        let mut match_count = 0u64;
+    let sinks_clone = sinks.clone();
+    let writer = std::thread::spawn(move || -> Result<HashMap<String, u64>> {
+        let mut match_counts: HashMap<String, u64> = HashMap::new();
+
         for batch in rx {
-            for row in batch {
-                sink.add_feature(row)?;
-                match_count += 1;
+            for (table_name, row) in batch {
+                if let Some(sink_handle) = sinks_clone.get(&table_name) {
+                    let mut sink = sink_handle.lock().unwrap();
+                    sink.add_feature(row)?;
+                    *match_counts.entry(table_name).or_insert(0) += 1;
+                } else {
+                    tracing::warn!("Unknown table name in feature batch: {}", table_name);
+                }
             }
         }
-        Ok(match_count)
+        Ok(match_counts)
     });
 
     let processor = processor.clone();
@@ -451,7 +528,7 @@ where
     let writer_join = writer.join();
 
     // Check writer thread first - it has the real error if the channel disconnected
-    let match_count = match writer_join {
+    let match_counts = match writer_join {
         Ok(Ok(result)) => result,
         Ok(Err(writer_err)) => {
             // Writer had an error - this is the root cause
@@ -480,7 +557,7 @@ where
     decode_result?;
 
     progress.finish();
-    Ok(match_count)
+    Ok(match_counts)
 }
 
 pub fn pass2_process(
@@ -488,33 +565,33 @@ pub fn pass2_process(
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     node_store: Arc<NodeStoreReader>,
-    sink: SinkHandle,
-) -> Result<u64> {
+    sinks: SinkMap,
+) -> Result<HashMap<String, u64>> {
     let processor = Arc::new(StandardProcessor {
         config,
         runtime,
         node_store,
     });
-    run_pass(path, processor, sink, "Pass 2/2: blocks")
+    run_pass(path, processor, sinks, "Pass 2/2: blocks")
 }
 
 pub fn pass_nodes_only(
     path: &Path,
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
-    sink: SinkHandle,
-) -> Result<u64> {
+    sinks: SinkMap,
+) -> Result<HashMap<String, u64>> {
     let processor = Arc::new(NodesOnlyProcessor { config, runtime });
-    run_pass(path, processor, sink, "Single pass: blocks")
+    run_pass(path, processor, sinks, "Single pass: blocks")
 }
 
 pub fn process_pbf(
     cli: &Cli,
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
-    sink: SinkHandle,
+    sinks: SinkMap,
     needs_nodes: bool,
-) -> Result<u64> {
+) -> Result<HashMap<String, u64>> {
     tracing::info!("Node cache required: {}", needs_nodes);
     if needs_nodes {
         if cli.verbose
@@ -591,14 +668,14 @@ pub fn process_pbf(
         tracing::info!("Node cache ready.");
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
-        let result = pass2_process(&cli.input, config, runtime, node_store, sink)?;
+        let result = pass2_process(&cli.input, config, runtime, node_store, sinks)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 
         Ok(result)
     } else {
         tracing::info!("Single pass: Processing nodes (parallel)...");
-        pass_nodes_only(&cli.input, config, runtime, sink)
+        pass_nodes_only(&cli.input, config, runtime, sinks)
     }
 }
 

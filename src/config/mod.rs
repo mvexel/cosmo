@@ -11,8 +11,12 @@ use tempfile::NamedTempFile;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FiltersConfig {
-    /// Single table configuration
-    pub table: TableConfig,
+    /// Single table configuration (backwards compatible)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<TableConfig>,
+    /// Multiple table configurations
+    #[serde(default)]
+    pub tables: HashMap<String, TableConfig>,
     /// Named mappings for derived columns
     #[serde(default)]
     pub mappings: HashMap<String, MappingConfig>,
@@ -20,22 +24,44 @@ pub struct FiltersConfig {
 
 impl FiltersConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let value: serde_json::Value = serde_yaml::from_str(&content)?;
-
-        // Check for deprecated 'tables:' syntax
-        if value.get("tables").is_some() {
-            anyhow::bail!(
-                "Configuration uses deprecated 'tables:' syntax.\n\
-                 Please update to 'table:' (singular) with a 'name' field.\n\
-                 Each YAML file should contain exactly one table."
-            );
-        }
-
         let settings = ::config::Config::builder()
             .add_source(::config::File::from(path))
             .build()?;
         Ok(settings.try_deserialize()?)
+    }
+
+    /// Normalize config to always use multi-table structure
+    fn normalize_tables(&self) -> anyhow::Result<HashMap<String, TableConfig>> {
+        let mut tables = HashMap::new();
+
+        // Add tables from tables: syntax (table name is the key)
+        for (table_name, mut table_config) in self.tables.clone() {
+            // Set the name field if not already set
+            if table_config.name.is_none() {
+                table_config.name = Some(table_name.clone());
+            }
+            tables.insert(table_name, table_config);
+        }
+
+        // If single table: syntax provided, add it
+        if let Some(ref single_table) = self.table {
+            let table_name = single_table.name.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Single table must have a name field"))?;
+
+            if tables.contains_key(table_name) {
+                anyhow::bail!(
+                    "Duplicate table name '{}' in both 'table:' and 'tables:' syntax",
+                    table_name
+                );
+            }
+            tables.insert(table_name.clone(), single_table.clone());
+        }
+
+        if tables.is_empty() {
+            anyhow::bail!("Config must define at least one table (use 'table:' or 'tables:')");
+        }
+
+        Ok(tables)
     }
 
     /// Compile the config, parsing all DSL strings and CEL expressions.
@@ -48,35 +74,40 @@ impl FiltersConfig {
             mappings.insert(name.clone(), mapping);
         }
 
-        // Compile the single table
-        let table = &self.table;
-        let table_name = table.name.clone();
+        // Normalize to multi-table structure
+        let raw_tables = self.normalize_tables()?;
 
-        let filter = match &table.filter {
-            FilterInput::Dsl(s) => parse_filter(s)
-                .map_err(|e| anyhow::anyhow!("Filter error in table '{}': {}", table_name, e))?,
-            FilterInput::Structured(expr) => convert_structured_filter(expr)?,
-        };
+        // Compile all tables
+        let mut compiled_tables = HashMap::new();
+        for (table_name, table_config) in raw_tables {
+            let filter = match &table_config.filter {
+                FilterInput::Dsl(s) => parse_filter(s)
+                    .map_err(|e| anyhow::anyhow!("Filter error in table '{}': {}", table_name, e))?,
+                FilterInput::Structured(expr) => convert_structured_filter(expr)?,
+            };
 
-        let mut columns = Vec::new();
-        for col in &table.columns {
-            let source = parse_column_source(&col.source, &mappings)?;
-            columns.push(CompiledColumn {
-                name: col.name.clone(),
-                source,
-                col_type: col.col_type,
-            });
+            let mut columns = Vec::new();
+            for col in &table_config.columns {
+                let source = parse_column_source(&col.source, &mappings)?;
+                columns.push(CompiledColumn {
+                    name: col.name.clone(),
+                    source,
+                    col_type: col.col_type,
+                });
+            }
+
+            let compiled_table = CompiledTable {
+                name: table_name.clone(),
+                filter,
+                columns,
+                geometry: table_config.geometry.clone(),
+            };
+
+            compiled_tables.insert(table_name, compiled_table);
         }
 
-        let compiled_table = CompiledTable {
-            name: table_name,
-            filter,
-            columns,
-            geometry: table.geometry.clone(),
-        };
-
         Ok(CompiledConfig {
-            table: compiled_table,
+            tables: compiled_tables,
             mappings,
         })
     }
@@ -144,10 +175,12 @@ impl NodeCacheMode {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TableConfig {
     /// Table name (used in output file naming and logging)
-    pub name: String,
+    /// Optional when using tables: syntax (key becomes the name)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub filter: FilterInput,
     pub columns: Vec<ColumnConfig>,
@@ -264,7 +297,7 @@ impl Default for FilterExpr {
 // ----------------------------------------------------------------------------
 
 pub struct CompiledConfig {
-    pub table: CompiledTable,
+    pub tables: HashMap<String, CompiledTable>,
     pub mappings: HashMap<String, Mapping>,
 }
 
@@ -401,7 +434,7 @@ pub enum ColumnType {
     Json,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ColumnConfig {
     pub name: String,
     pub source: String,
