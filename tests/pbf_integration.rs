@@ -30,6 +30,7 @@ fn run_cosmo(filters_yaml: &str) -> Vec<String> {
     let exe = env!("CARGO_BIN_EXE_cosmo");
 
     let output = Command::new(exe)
+        .arg("convert")
         .arg("--input")
         .arg(fixture_path())
         .arg("--output")
@@ -63,6 +64,7 @@ fn run_cosmo_to_file(filters_yaml: &str, format: &str, output_path: &Path) {
     let exe = env!("CARGO_BIN_EXE_cosmo");
 
     let output = Command::new(exe)
+        .arg("convert")
         .arg("--input")
         .arg(fixture_path())
         .arg("--output")
@@ -89,6 +91,7 @@ fn run_cosmo_expect_failure(filters_yaml: &str, args: &[&str]) -> String {
     let exe = env!("CARGO_BIN_EXE_cosmo");
 
     let output = Command::new(exe)
+        .arg("convert")
         .arg("--input")
         .arg(fixture_path())
         .arg("--output")
@@ -640,6 +643,7 @@ fn pois_annotated_yaml_integration() {
     let exe = env!("CARGO_BIN_EXE_cosmo");
 
     let output = Command::new(exe)
+        .arg("convert")
         .arg("--input")
         .arg(fixture_path())
         .arg("--output")
@@ -713,6 +717,7 @@ table:
     let exe = env!("CARGO_BIN_EXE_cosmo");
 
     let output = Command::new(exe)
+        .arg("convert")
         .arg("--input")
         .arg(fixture_path())
         .arg("--output")

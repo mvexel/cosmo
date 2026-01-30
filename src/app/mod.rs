@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossbeam_channel::bounded;
 use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
 use rayon::prelude::*;
@@ -19,6 +19,31 @@ pub type SinkMap = HashMap<String, Arc<Mutex<Box<dyn DataSink + Send>>>>;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
+    /// Enable verbose output
+    #[arg(short, long, env = "COSMO_VERBOSE", global = true)]
+    pub verbose: bool,
+
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Convert OSM PBF data to other formats
+    Convert(ConvertArgs),
+    /// Validate filter configuration
+    Validate(ValidateArgs),
+}
+
+#[derive(Args)]
+pub struct ValidateArgs {
+    /// Filter configuration file (YAML)
+    #[arg(short, long, env = "COSMO_FILTERS")]
+    pub filters: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ConvertArgs {
     /// Input PBF file
     #[arg(short, long, env = "COSMO_INPUT")]
     pub input: PathBuf,
@@ -47,10 +72,6 @@ pub struct Cli {
     #[arg(short, long, env = "COSMO_JOBS")]
     pub jobs: Option<usize>,
 
-    /// Enable verbose output
-    #[arg(short, long, env = "COSMO_VERBOSE")]
-    pub verbose: bool,
-
     /// Output format (auto-detected if omitted)
     #[arg(long, value_enum, env = "COSMO_FORMAT")]
     pub format: Option<OutputFormat>,
@@ -62,10 +83,6 @@ pub struct Cli {
     /// Bounding box filter: min_lon,min_lat,max_lon,max_lat
     #[arg(long, value_parser = parse_bbox, allow_hyphen_values = true, env = "COSMO_BBOX")]
     pub bbox: Option<[f64; 4]>,
-
-    /// Validate configuration and exit without processing
-    #[arg(long)]
-    pub validate: bool,
 }
 
 /// Parse a bounding box from a comma-separated string: min_lon,min_lat,max_lon,max_lat
@@ -614,7 +631,8 @@ pub fn pass_nodes_only(
 }
 
 pub fn process_pbf(
-    cli: &Cli,
+    args: &ConvertArgs,
+    verbose: bool,
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     sinks: SinkMap,
@@ -622,15 +640,15 @@ pub fn process_pbf(
 ) -> Result<HashMap<String, u64>> {
     tracing::info!("Node cache required: {}", needs_nodes);
     if needs_nodes {
-        if cli.verbose
-            && let Ok(metadata) = std::fs::metadata(&cli.input)
+        if verbose
+            && let Ok(metadata) = std::fs::metadata(&args.input)
         {
             let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
             tracing::info!("Input size: {:.2} GB", size_gb);
         }
         // Resolve auto mode to concrete mode based on input file size
         let (resolved_mode, mode_desc) =
-            resolve_node_cache_mode(runtime.node_cache_mode, &cli.input);
+            resolve_node_cache_mode(runtime.node_cache_mode, &args.input);
 
         // Create node store based on resolved mode
         let node_store = match resolved_mode {
@@ -640,7 +658,7 @@ pub fn process_pbf(
                     .context("Pipeline: Failed to create sparse node store")?
             }
             NodeCacheMode::Dense => {
-                if let Some(ref path) = cli.node_cache {
+                if let Some(ref path) = args.node_cache {
                     // User provided explicit path - no auto-cleanup
                     tracing::info!(
                         "Node cache: {} at {:?} (max {} nodes)",
@@ -679,10 +697,10 @@ pub fn process_pbf(
         };
         tracing::info!(
             "Pass 1: Indexing nodes from {:?} ({})...",
-            cli.input,
+            args.input,
             pass1_mode
         );
-        let (node_store, node_count) = pass1_index_nodes(&cli.input, node_store, use_parallel)?;
+        let (node_store, node_count) = pass1_index_nodes(&args.input, node_store, use_parallel)?;
         tracing::info!("Indexed {} nodes.", node_count);
 
         let finalize_step = match resolved_mode {
@@ -696,14 +714,14 @@ pub fn process_pbf(
         tracing::info!("Node cache ready.");
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
-        let result = pass2_process(&cli.input, config, runtime, node_store, sinks)?;
+        let result = pass2_process(&args.input, config, runtime, node_store, sinks)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 
         Ok(result)
     } else {
         tracing::info!("Single pass: Processing nodes (parallel)...");
-        pass_nodes_only(&cli.input, config, runtime, sinks)
+        pass_nodes_only(&args.input, config, runtime, sinks)
     }
 }
 

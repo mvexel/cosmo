@@ -16,8 +16,8 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use app::{
-    Cli, OutputFormat, init_sink, init_sinks, needs_node_store_compiled, process_pbf,
-    summarize_filters_compiled,
+    Cli, Commands, ConvertArgs, OutputFormat, ValidateArgs, init_sink, init_sinks,
+    needs_node_store_compiled, process_pbf, summarize_filters_compiled,
 };
 use config::{FiltersConfig, RuntimeConfig};
 
@@ -55,12 +55,65 @@ fn run() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    match cli.command {
+        Commands::Validate(args) => run_validate(args),
+        Commands::Convert(args) => run_convert(args, cli.verbose),
+    }
+}
+
+fn run_validate(args: ValidateArgs) -> Result<()> {
+    if !args.filters.exists() {
+        anyhow::bail!(
+            "Filter configuration file not found: {:?}\n\
+             Hint: Check the path or set COSMO_FILTERS environment variable.",
+            args.filters
+        );
+    }
+
+    /*
+    ******************
+    Load filter config
+    ******************
+    */
+    let filters = FiltersConfig::load(&args.filters)
+        .with_context(|| format!("Failed to load filter configuration from {:?}", args.filters))?;
+    let compiled = Arc::new(
+        filters
+            .compile()
+            .context("CLI: Failed to compile filter config")?,
+    );
+
+    // feedback to user about the filters
+    let summary = summarize_filters_compiled(&compiled);
+    tracing::info!("Config: {}", summary);
+
+    // Log each table's details
+    for (table_name, table) in &compiled.tables {
+        tracing::info!(
+            "  - Table '{}': {} columns (nodes: {}, ways: {}, relations: {})",
+            table_name,
+            table.columns.len(),
+            table.geometry.node,
+            table.geometry.way.enabled(),
+            table.geometry.relation
+        );
+    }
+
+    tracing::info!(
+        "Configuration valid: {} table(s) defined.",
+        compiled.tables.len()
+    );
+
+    Ok(())
+}
+
+fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     /*
     *********************
     Initialize thread pool
     *********************
     */
-    if let Some(jobs) = cli.jobs {
+    if let Some(jobs) = args.jobs {
         rayon::ThreadPoolBuilder::new()
             .num_threads(jobs)
             .build_global()
@@ -72,18 +125,18 @@ fn run() -> Result<()> {
     Validate input files
     ******************
     */
-    if !cli.input.exists() {
+    if !args.input.exists() {
         anyhow::bail!(
             "Input PBF file not found: {:?}\n\
              Hint: Check the path or set COSMO_INPUT environment variable.",
-            cli.input
+            args.input
         );
     }
-    if !cli.filters.exists() {
+    if !args.filters.exists() {
         anyhow::bail!(
             "Filter configuration file not found: {:?}\n\
              Hint: Check the path or set COSMO_FILTERS environment variable.",
-            cli.filters
+            args.filters
         );
     }
 
@@ -92,8 +145,8 @@ fn run() -> Result<()> {
     Load filter config
     ******************
     */
-    let filters = FiltersConfig::load(&cli.filters)
-        .with_context(|| format!("Failed to load filter configuration from {:?}", cli.filters))?;
+    let filters = FiltersConfig::load(&args.filters)
+        .with_context(|| format!("Failed to load filter configuration from {:?}", args.filters))?;
     let compiled = Arc::new(
         filters
             .compile()
@@ -123,14 +176,14 @@ fn run() -> Result<()> {
     */
     let runtime_defaults = RuntimeConfig::default();
     let runtime = Arc::new(RuntimeConfig {
-        node_cache_mode: cli
+        node_cache_mode: args
             .node_cache_mode
             .unwrap_or(runtime_defaults.node_cache_mode),
-        node_cache_max_nodes: cli
+        node_cache_max_nodes: args
             .node_cache_max_nodes
             .unwrap_or(runtime_defaults.node_cache_max_nodes),
-        all_tags: cli.all_tags,
-        bbox: cli.bbox,
+        all_tags: args.all_tags,
+        bbox: args.bbox,
     });
 
     // Log bbox filter if active
@@ -144,20 +197,11 @@ fn run() -> Result<()> {
         );
     }
 
-    // Handle --validate flag: exit early after config validation
-    if cli.validate {
-        tracing::info!(
-            "Configuration valid: {} table(s) defined. Exiting without processing.",
-            compiled.tables.len()
-        );
-        return Ok(());
-    }
-
     // Detect format from extension if not provided
-    let format = cli
+    let format = args
         .format
         .or_else(|| {
-            let ext = cli.output.extension()?.to_str()?;
+            let ext = args.output.extension()?.to_str()?;
             match ext.to_lowercase().as_str() {
                 "geojson" => Some(OutputFormat::GeoJson),
                 "geojsonl" | "jsonl" | "json" => Some(OutputFormat::GeoJsonl),
@@ -176,13 +220,13 @@ fn run() -> Result<()> {
     let sinks = if compiled.tables.len() == 1 {
         // Single table mode: support stdout and file output
         let (table_name, _) = compiled.tables.iter().next().unwrap();
-        let sink = init_sink(&format, &cli.output, &compiled)?;
+        let sink = init_sink(&format, &args.output, &compiled)?;
         let mut map = HashMap::new();
         map.insert(table_name.clone(), Arc::new(Mutex::new(sink)));
         map
     } else {
         // Multi-table mode: require directory
-        init_sinks(&format, &cli.output, &compiled)?
+        init_sinks(&format, &args.output, &compiled)?
     };
 
     /*
@@ -192,7 +236,7 @@ fn run() -> Result<()> {
     */
     let needs_nodes = needs_node_store_compiled(&compiled);
     let start = std::time::Instant::now();
-    let match_counts = process_pbf(&cli, compiled, runtime, sinks.clone(), needs_nodes)?;
+    let match_counts = process_pbf(&args, verbose, compiled, runtime, sinks.clone(), needs_nodes)?;
 
     /*
     ********************

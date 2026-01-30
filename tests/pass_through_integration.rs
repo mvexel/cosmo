@@ -6,6 +6,7 @@ fn runs_pass_through_conversion() {
     let output_path = output_file.path().to_str().unwrap();
 
     let status = Command::new(env!("CARGO_BIN_EXE_cosmo"))
+        .arg("convert")
         .arg("--input")
         .arg("fixture/library_square.osm.pbf")
         .arg("--output")
