@@ -12,6 +12,7 @@ mod utils;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::collections::HashMap;
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use app::{
@@ -20,8 +21,17 @@ use app::{
 };
 use config::{FiltersConfig, RuntimeConfig};
 
-// anyhow::Result allows us to use ? operator in main to emit errors
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {:#}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     /*
@@ -59,10 +69,31 @@ fn main() -> Result<()> {
 
     /*
     ******************
+    Validate input files
+    ******************
+    */
+    if !cli.input.exists() {
+        anyhow::bail!(
+            "Input PBF file not found: {:?}\n\
+             Hint: Check the path or set COSMO_INPUT environment variable.",
+            cli.input
+        );
+    }
+    if !cli.filters.exists() {
+        anyhow::bail!(
+            "Filter configuration file not found: {:?}\n\
+             Hint: Check the path or set COSMO_FILTERS environment variable.",
+            cli.filters
+        );
+    }
+
+    /*
+    ******************
     Load filter config
     ******************
     */
-    let filters = FiltersConfig::load(&cli.filters)?;
+    let filters = FiltersConfig::load(&cli.filters)
+        .with_context(|| format!("Failed to load filter configuration from {:?}", cli.filters))?;
     let compiled = Arc::new(
         filters
             .compile()
@@ -113,6 +144,15 @@ fn main() -> Result<()> {
         );
     }
 
+    // Handle --validate flag: exit early after config validation
+    if cli.validate {
+        tracing::info!(
+            "Configuration valid: {} table(s) defined. Exiting without processing.",
+            compiled.tables.len()
+        );
+        return Ok(());
+    }
+
     // Detect format from extension if not provided
     let format = cli
         .format
@@ -122,6 +162,7 @@ fn main() -> Result<()> {
                 "geojson" => Some(OutputFormat::GeoJson),
                 "geojsonl" | "jsonl" | "json" => Some(OutputFormat::GeoJsonl),
                 "parquet" => Some(OutputFormat::GeoParquet),
+                "csv" => Some(OutputFormat::Csv),
                 _ => None,
             }
         })
@@ -159,7 +200,9 @@ fn main() -> Result<()> {
     ********************
     */
     for sink in sinks.values() {
-        let mut s = sink.lock().unwrap();
+        let mut s = sink
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Sink lock poisoned: {}", e))?;
         s.finish().context("Pipeline: Failed to finalize sink")?;
     }
 

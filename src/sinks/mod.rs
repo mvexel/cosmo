@@ -3,10 +3,12 @@ use geo_types::Geometry;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
+pub mod csv_wkt;
 pub mod geojson;
 pub mod geojsonl;
 pub mod geoparquet;
 
+pub use self::csv_wkt::CsvWktSink;
 pub use self::geojson::GeoJsonSink;
 pub use self::geojsonl::GeoJsonlSink;
 pub use self::geoparquet::GeoParquetSink;

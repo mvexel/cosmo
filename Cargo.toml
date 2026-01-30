@@ -13,7 +13,8 @@ crossbeam-channel = "0.5.15"
 geo = "0.32.0"
 geo-types = "0.7.18"
 geojson = "0.24.2"
-geozero = { version = "0.15.1", features = ["with-geo", "with-wkb"] }
+geozero = { version = "0.15.1", features = ["with-geo", "with-wkb", "with-wkt"] }
+csv = "1.3"
 memmap2 = "0.9.9"
 osmpbf = { version = "0.3.*", git = "https://github.com/brad-richardson/osmpbf.git", branch = "async-blob-reader" }
 parquet = "57.1.0"

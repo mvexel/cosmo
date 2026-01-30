@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
-use crate::sinks::{ColumnSpec, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink};
+use crate::sinks::{ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink};
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
 
@@ -20,49 +20,52 @@ pub type SinkMap = HashMap<String, Arc<Mutex<Box<dyn DataSink + Send>>>>;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Input PBF file
-    #[arg(short, long)]
+    #[arg(short, long, env = "COSMO_INPUT")]
     pub input: PathBuf,
 
-    /// Output file (.geojson, .geojsonl, .parquet)
-    #[arg(short, long)]
+    /// Output file or directory (.geojson, .geojsonl, .parquet, .csv)
+    #[arg(short, long, env = "COSMO_OUTPUT")]
     pub output: PathBuf,
 
     /// Filter configuration file (YAML)
-    #[arg(short, long)]
+    #[arg(short, long, env = "COSMO_FILTERS")]
     pub filters: PathBuf,
 
     /// Force specific node cache mode
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, env = "COSMO_NODE_CACHE_MODE")]
     pub node_cache_mode: Option<NodeCacheMode>,
 
     /// Node cache directory (for dense mode)
-    #[arg(long)]
+    #[arg(long, env = "COSMO_NODE_CACHE")]
     pub node_cache: Option<PathBuf>,
 
     /// Maximum nodes for dense cache (default: 16B)
-    #[arg(long)]
+    #[arg(long, env = "COSMO_NODE_CACHE_MAX_NODES")]
     pub node_cache_max_nodes: Option<u64>,
 
     /// Number of parallel jobs (default: all cores)
-    #[arg(short, long)]
+    #[arg(short, long, env = "COSMO_JOBS")]
     pub jobs: Option<usize>,
 
     /// Enable verbose output
-    #[arg(short, long)]
+    #[arg(short, long, env = "COSMO_VERBOSE")]
     pub verbose: bool,
 
     /// Output format (auto-detected if omitted)
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, env = "COSMO_FORMAT")]
     pub format: Option<OutputFormat>,
 
     /// Include all tags in a 'tags' JSON column
-    #[arg(long)]
+    #[arg(long, env = "COSMO_ALL_TAGS")]
     pub all_tags: bool,
 
     /// Bounding box filter: min_lon,min_lat,max_lon,max_lat
-    /// Only output features with geometry within this bbox
-    #[arg(long, value_parser = parse_bbox, allow_hyphen_values = true)]
+    #[arg(long, value_parser = parse_bbox, allow_hyphen_values = true, env = "COSMO_BBOX")]
     pub bbox: Option<[f64; 4]>,
+
+    /// Validate configuration and exit without processing
+    #[arg(long)]
+    pub validate: bool,
 }
 
 /// Parse a bounding box from a comma-separated string: min_lon,min_lat,max_lon,max_lat
@@ -111,6 +114,8 @@ pub enum OutputFormat {
     GeoJsonl,
     #[value(name = "geoparquet", alias = "parquet")]
     GeoParquet,
+    #[value(name = "csv")]
+    Csv,
 }
 
 pub type SinkHandle = Arc<Mutex<Box<dyn DataSink + Send>>>;
@@ -166,6 +171,7 @@ pub fn output_format_label(format: &OutputFormat) -> &'static str {
         OutputFormat::GeoJson => "geojson",
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "geoparquet",
+        OutputFormat::Csv => "csv",
     }
 }
 
@@ -236,6 +242,21 @@ pub fn init_sink(
             );
             Ok(Box::new(GeoParquetSink::new(output, columns)?))
         }
+        OutputFormat::Csv => {
+            let columns = collect_columns(config)?;
+            if output == Path::new("-") {
+                tracing::info!("Sink: {} -> stdout ({} columns)", output_format_label(format), columns.len());
+                Ok(Box::new(CsvWktSink::stdout(columns)?))
+            } else {
+                tracing::info!(
+                    "Sink: {} -> {:?} ({} columns)",
+                    output_format_label(format),
+                    output,
+                    columns.len()
+                );
+                Ok(Box::new(CsvWktSink::new(output, columns)?))
+            }
+        }
     }
 }
 
@@ -265,6 +286,7 @@ pub fn init_sinks(
         OutputFormat::GeoJson => "geojson",
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "parquet",
+        OutputFormat::Csv => "csv",
     };
 
     for (table_name, table_config) in &config.tables {
@@ -276,6 +298,10 @@ pub fn init_sinks(
             OutputFormat::GeoParquet => {
                 let columns = collect_columns_for_table(table_config)?;
                 Box::new(GeoParquetSink::new(&file_path, columns)?)
+            }
+            OutputFormat::Csv => {
+                let columns = collect_columns_for_table(table_config)?;
+                Box::new(CsvWktSink::new(&file_path, columns)?)
             }
         };
 
@@ -485,7 +511,9 @@ where
         for batch in rx {
             for (table_name, row) in batch {
                 if let Some(sink_handle) = sinks_clone.get(&table_name) {
-                    let mut sink = sink_handle.lock().unwrap();
+                    let mut sink = sink_handle
+                        .lock()
+                        .map_err(|e| anyhow!("Sink lock poisoned: {}", e))?;
                     sink.add_feature(row)?;
                     *match_counts.entry(table_name).or_insert(0) += 1;
                 } else {

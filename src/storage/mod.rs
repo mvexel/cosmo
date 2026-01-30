@@ -316,8 +316,16 @@ impl SparseNodeStoreReader {
             let mid = low + (high - low) / 2;
             let offset = (mid as usize) * SPARSE_ENTRY_SIZE;
             let data = &self.mmap[offset..offset + SPARSE_ENTRY_SIZE];
-            let mid_id = u64::from_le_bytes(data[0..8].try_into().unwrap());
-            let packed = i64::from_le_bytes(data[8..16].try_into().unwrap());
+            let mid_id = u64::from_le_bytes(
+                data[0..8]
+                    .try_into()
+                    .expect("slice is exactly 8 bytes"),
+            );
+            let packed = i64::from_le_bytes(
+                data[8..16]
+                    .try_into()
+                    .expect("slice is exactly 8 bytes"),
+            );
 
             match mid_id.cmp(&id) {
                 std::cmp::Ordering::Less => low = mid + 1,
@@ -397,8 +405,12 @@ impl MemoryNodeStore {
 }
 
 fn decode_coords(data: &[u8]) -> (f64, f64) {
-    let lon_bytes: [u8; 4] = data[0..4].try_into().unwrap();
-    let lat_bytes: [u8; 4] = data[4..8].try_into().unwrap();
+    let lon_bytes: [u8; 4] = data[0..4]
+        .try_into()
+        .expect("slice is exactly 4 bytes");
+    let lat_bytes: [u8; 4] = data[4..8]
+        .try_into()
+        .expect("slice is exactly 4 bytes");
 
     let lon_fixed = i32::from_le_bytes(lon_bytes);
     let lat_fixed = i32::from_le_bytes(lat_bytes);
