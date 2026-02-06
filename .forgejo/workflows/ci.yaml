@@ -8,12 +8,11 @@ on:
 jobs:
   build:
     runs-on: docker
+    container:
+      image: rust:latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: https://github.com/actions/checkout@v4
 
       - name: Build
         run: cargo build --release --verbose
