@@ -1,0 +1,4 @@
+table:
+  name: toilets
+  filter: amenity=toilets
+  columns: []

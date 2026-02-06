@@ -1,0 +1,6 @@
+table:
+  name: toilets
+  filter: amenity=toilets
+  geometry:
+    closed_way: centroid
+  columns: []

@@ -1,0 +1,18 @@
+table:
+  name: toilets
+  filter: amenity=toilets
+  geometry:
+    closed_way: centroid
+  columns:
+    - name: name
+      source: tag:name
+    - name: paper_supplied
+      source: tag:toilets:paper_supplied
+    - name: handwashing
+      source: tag:toilets:handwashing
+    - name: wheelchair_accessible
+      source: tag:wheelchair
+    - name: fee
+      source: tag:fee
+    - name: opening_hours
+      source: tag:opening_hours
