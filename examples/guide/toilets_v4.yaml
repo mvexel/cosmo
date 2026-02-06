@@ -1,0 +1,29 @@
+mappings:
+  toilet_category:
+    rules:
+      - match: 'toilets:wheelchair=yes & fee=no'
+        value: accessible_free
+      - match: 'toilets:wheelchair=yes'
+        value: accessible
+      - match: 'fee=no'
+        value: free
+      - match: 'fee=yes'
+        value: paid
+    default: unknown
+
+table:
+  name: toilets
+  filter: amenity=toilets
+  geometry:
+    closed_way: centroid
+  columns:
+    - name: name
+      source: tag:name
+    - name: category
+      source: mapping:toilet_category
+    - name: wheelchair
+      source: tag:toilets:wheelchair
+    - name: fee
+      source: tag:fee
+    - name: paper_supplied
+      source: tag:toilets:paper_supplied

@@ -1,261 +1,195 @@
 ```
-#     ______   ______   ______   ___ __ __   ______      
-#    /_____/\ /_____/\ /_____/\ /__//_//_/\ /_____/\     
-#    \:::__\/ \:::_ \ \\::::_\/_\::\| \| \ \\:::_ \ \    
-#     \:\ \  __\:\ \ \ \\:\/___/\\:.      \ \\:\ \ \ \   
-#      \:\ \/_/\\:\ \ \ \\_::._\:\\:.\-/\  \ \\:\ \ \ \  
-#       \:\_\ \ \\:\_\ \ \ /____\:\\. \  \  \ \\:\_\ \ \ 
-#        \_____\/ \_____\/ \_____\/ \__\/ \__\/ \_____\/ 
-#                                                        
+     ______   ______   ______   ___ __ __   ______      
+    /_____/\ /_____/\ /_____/\ /__//_//_/\ /_____/\     
+    \:::__\/ \:::_ \ \\::::_\/_\::\| \| \ \\:::_ \ \    
+     \:\ \  __\:\ \ \ \\:\/___/\\:.      \ \\:\ \ \ \   
+      \:\ \/_/\\:\ \ \ \\_::._\:\\:.\-/\  \ \\:\ \ \ \  
+       \:\_\ \ \\:\_\ \ \ /____\:\\. \  \  \ \\:\_\ \ \ 
+        \_____\/ \_____\/ \_____\/ \__\/ \__\/ \_____\/ 
 ```
 
 Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with optional filtering, which is arguably more useful.
 
-## Installation
-It's not published on crates.io yet, but you can install it locally from the source directory.
+## Quick Start
+
+### Installation
 
 ```bash
 cargo install --path .
 ```
 
-## Usage
-
-Basic usage: 
+### Basic Usage
 
 ```bash
-cosmo --input <input.osm.pbf> \
-  --output <output> \
-  --filters <filters.yaml> \
-  [--all-tags] \
-  [--verbose]
+cosmo convert \
+  --input city.osm.pbf \
+  --filters config.yaml \
+  --output output.geojson
 ```
 
-### Command Line Options
+### Example Filter Configuration
+
+Extract named restaurants and cafes as points:
+
+```yaml
+table:
+  name: pois
+  filter: 'name & (amenity=restaurant|cafe)'
+  geometry:
+    node: true
+    way: centroid      # Convert building polygons to points
+    closed_way: centroid
+  columns:
+    - name: name
+      source: tag:name
+    - name: cuisine
+      source: tag:cuisine
+    - name: osm_id
+      source: meta:id
+      type: integer
+```
+
+**See [examples/](examples/) for more filter configurations and the [Filter YAML Guide](docs/filter_yaml_guide.md) for a step by step guide and reference documentation.**
+
+## Command Line Interface
+
+### Convert Command
+
+The primary command for converting OSM PBF files:
+
+```bash
+cosmo convert [OPTIONS]
+```
 
 #### Required Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--input <PATH>` | `-i` | Input OSM PBF file path |
-| `--output <PATH>` | `-o` | Output file path (format auto-detected from extension: `.geojson`, `.geojsonl`, `.parquet`) |
-| `--filters <PATH>` | `-f` | Filter configuration file (YAML) |
+| `--input <PATH>` | `-i` | Input OSM PBF file |
+| `--filters <PATH>` | `-f` | Filter configuration (YAML) |
+| `--output <PATH>` | `-o` | Output file (`.geojson`, `.geojsonl`, `.parquet`) or `-` for stdout (GeoJSONL only) |
 
-#### Output Options
-
-| Option | Description |
-|--------|-------------|
-| `--format <FORMAT>` | Explicitly specify output format: `geojson`, `geojsonl`, or `parquet` (overrides auto-detection) |
-| `--all-tags` | Include all original OSM tags in the output 'tags' property (JSON object), in addition to explicitly configured columns |
-
-#### Filtering Options
-
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--bbox <BBOX>` | Bounding box filter: only output features with geometries intersecting this box | `--bbox -122.5,37.7,-122.3,37.8` |
-
-Format: `min_lon,min_lat,max_lon,max_lat` (WGS84 decimal degrees)
-
-#### Performance Options
+#### Common Options
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--jobs <N>` | `-j` | Number of parallel jobs to run | All available CPU cores |
+| `--format <FORMAT>` | | Override format detection: `geojson`, `geojsonl`, `parquet` | Auto-detect from extension |
+| `--bbox <BBOX>` | | Filter by bounding box: `min_lon,min_lat,max_lon,max_lat` | None |
+| `--all-tags` | | Include all OSM tags as JSON in addition to configured columns | false |
+| `--verbose` | `-v` | Enable detailed logging | false |
+| `--jobs <N>` | `-j` | Parallel processing threads | All CPUs |
 
 #### Node Cache Options
 
-OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates when building way geometries. The node cache is built during the first pass through the PBF file and used during the second pass. Three strategies are available:
-
-- **sparse**: Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. Requires sorted input. PBF files downloaded from OSM or GeoFabrik are sorted. If you are unsure, use `osmium sort`.
-- **dense**: Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent).
-- **memory**: In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node).
+OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates when building way geometries. The node cache is built during the first pass through the PBF file and used during the second pass.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--node-cache-mode <MODE>` | Cache strategy: `auto`, `sparse`, `dense`, or `memory` | `auto` (selects `sparse` for files <5GB, `dense` for ≥5GB) |
-| `--node-cache <PATH>` | Custom path for dense mode cache file (otherwise uses temp file with auto-cleanup) | Temporary file |
-| `--node-cache-max-nodes <N>` | Maximum node ID to allocate space for in dense mode | 16,000,000,000 |
+| `--node-cache-mode <MODE>` | Cache strategy: `auto`, `sparse`, `dense`, `memory` | `auto` |
+| `--node-cache <PATH>` | Custom cache file path (dense mode only) | Temp file (auto-cleanup) |
+| `--node-cache-max-nodes <N>` | Maximum node ID to allocate space for (dense mode) | 16,000,000,000 |
 
-#### Logging Options
+**Cache Modes:**
+- **auto** - Automatically selects `sparse` for files <5GB or `dense` for files ≥5GB
+- **sparse** - Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. **Requires sorted input** - PBF files from OSM/GeoFabrik are sorted; use `osmium sort` if unsure
+- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent). Creates a sparse file with ~128GB virtual size that only consumes disk space for nodes actually present
+- **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). For planet processing you'd need 384GB+ RAM
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--verbose` | `-v` | Enable detailed logging output |
+**Why these options?** OSM node IDs are globally assigned, so even a small city extract will have IDs scattered across the entire range (10+ billion). For small extracts, sparse mode with binary search is actually faster than dense. For large extracts, dense mode's O(1) lookup wins and uses less disk space. Memory mode is fastest but only practical for smaller extracts or machines with lots of RAM
 
-#### Full Example
+#### Example: Extract POIs from a Region
 
 ```bash
-cosmo \
+cosmo convert \
   --input utah-latest.osm.pbf \
-  --output pois.parquet \
-  --filters poi_filters.yaml \
+  --filters examples/pois_simple.yaml \
+  --output pois.geojsonl \
   --bbox -112.1,40.5,-111.8,40.8 \
-  --all-tags \
-  --jobs 8 \
   --node-cache-mode sparse \
   --verbose
 ```
 
-## Filter Configuration Reference
+### Validate Command
 
-The filter configuration file (default: `filters.yaml`) defines how OSM data is processed. It consists of a single "table" definition.
-
-### Filter DSL
-
-Filters determine which OSM features are included. Cosmo uses a powerful filter DSL:
-
-| Syntax | Description | Example |
-| :--- | :--- | :--- |
-| `key` | Matches if the tag exists | `highway` |
-| `key=value` | Exact match | `highway=primary` |
-| `key=v1\|v2` | Matches any of the pipe-separated values | `amenity=cafe\|restaurant` |
-| `expr1 & expr2` | Logical AND | `highway=primary & name` |
-| `expr1 \| expr2` | Logical OR | `amenity \| shop` |
-| `(expr)` | Grouping | `(amenity \| shop) & name` |
-
-For a full list of operators and syntax, see the [Filter YAML Guide](docs/filter_yaml_guide.md).
-
-### Geometry Configuration
-
-Controls how geometries are constructed for the table:
-
-- `way`: `linestring` (default), `polygon`, `centroid`, or `false` (disable).
-- `closed_way`: `polygon` (default), `centroid`, `linestring`. Applied to ways that start and end at the same node.
-- `node`: `true`/`false`.
-- `relation`: `true`/`false`. **Note:** Relation geometries are currently not supported and will be ignored.
-
-### Columns & Metadata
-
-Map OSM tags or metadata to output columns.
-
-- `type`: `string`, `integer`, `float`, or `json`.
-- `source: "tag:<key>"`: (or just `"<key>"`) Extracts the value of the OSM tag `<key>`.
-- `source: "tags"`: Extracts all OSM tags as a JSON object.
-- `source: "meta"`: Extracts all metadata fields as a JSON object.
-- `source: "refs"`: Extracts way node references as a JSON array (ways only).
-- `source: "mapping:<name>"`: Categorizes features using a named mapping.
-- `source: "expr:<cel>"`: Computes a value using a [CEL expression](docs/filter_yaml_guide.md#cel-expressions).
-- `source: "meta:<field>"`: Extracts OSM metadata. Supported fields:
-    - `id`: OSM ID (integer).
-    - `version`: Version number (integer).
-    - `timestamp`: Modification timestamp (string, ISO 8601).
-    - `uid`: User ID (integer).
-    - `user`: User name (string).
-
-For more details on sources and advanced logic, see the [Filter YAML Guide](docs/filter_yaml_guide.md).
-
-### Example Configuration
-
-```yaml
-mappings:
-  poi_class:
-    rules:
-      - match: 'amenity=restaurant|food_court'
-        value: restaurant
-      - match: 'amenity=cafe|coffee_shop'
-        value: cafe
-    default: misc
-
-table:
-  name: pois
-  filter: 'name & (amenity=restaurant|food_court|cafe|coffee_shop)'
-  geometry:
-    node: true
-    way: centroid
-  columns:
-    - name: name
-      source: tag:name
-      type: string
-    - name: class
-      source: mapping:poi_class
-      type: string
-    - name: osm_id
-      source: meta:id
-      type: integer
-    - name: name_en
-      source: "expr:has(tags.name_en) ? tags.name_en : tags.name"
-      type: string
-```
-
-### Pass-through Configuration
-
-To export all features with their tags and metadata as JSON blobs (useful for raw data conversion):
-
-```yaml
-table:
-  name: all_features
-  filter: "" # Or {} - matches everything
-  columns:
-    - name: tags
-      source: tags
-      type: json
-    - name: meta
-      source: meta
-      type: json
-    - name: refs
-      source: refs
-      type: json
-```
-
-Runtime flags for tweaking the node cache method:
+Validate a filter configuration without processing data:
 
 ```bash
-cosmo --input <input.osm.pbf> \
-  --output <output> \
-  --format <geojson|geoparquet> \
-  --filters <filters.yaml> \
-  --node-cache-mode <auto|sparse|dense|memory> \
-  --node-cache-max-nodes <count>
+cosmo validate <config.yaml> [--verbose]
 ```
 
-## Node Cache
+### Environment Variables
 
-The node cache stores node coordinates for resolving way geometries. It is rebuilt on every run. By default, a temporary cache file is created and deleted after the run. You can override the path with `--node-cache`, but it is still rebuilt each time to avoid mixing node coordinates across extracts.
+All options support environment variables with the `COSMO_` prefix:
 
-### Cache Modes
+```bash
+export COSMO_INPUT=city.osm.pbf
+export COSMO_FILTERS=config.yaml
+export COSMO_OUTPUT=output.geojsonl
+cosmo convert
+```
 
-- **auto** (default): Automatically selects `sparse` or `dense` based on input file size. For PBF files smaller than 5GB, `sparse` is selected. For larger files, `dense` is selected. You can override this with `--node-cache-mode`.
-- **sparse**: Sorted array (disk-backed) with binary search. Low RAM for extracts. Uses sequential indexing to preserve sort order; **requires sorted input (use `osmium sort` if needed)**.
-- **dense**: Memory-mapped file indexed by node ID. Best for planet/continent. Uses parallel indexing for maximum speed. The cache file is created as a **sparse file** with a virtual size of ~128 GiB (for 16B max nodes). On most modern file systems (APFS, Ext4, NTFS, XFS), this file only consumes disk space for nodes actually present. For planet files, it will grow to ~90 GB.
-- **memory**: In-memory HashMap. No disk usage, but high RAM consumption. If you have a lot of RAM, you may be able to process the planet like this? (would be cool. I only have 16GB. Let me know.)
+## Filter Configuration
 
-> Why these options? OSM node IDs are globally assigned. So, even a small city extract will have IDs scattered across the entire range (more than 10 billion nodes). But the smaller the extract, the sparser the node ID distribution. So for small extracts, using a sparse node cache with O(log n) binary search is faster than dense. For large extracts, dense mode is faster and actually uses less disk space. For memory mode, the node cache is stored as a regular HashMap, so you get O(1) lookups but at the cost of high RAM usage. The HashMap needs at least 24 bytes per node, but this can be significantly higher. I would not try to process the entire planet in memorty unless you have at least 384GB of RAM.
+Filters are defined in YAML and consist of:
 
-## Environment Variables
+1. **Filter DSL** - Which features to extract
+2. **Geometry configuration** - How to handle nodes/ways/relations
+3. **Columns** - Which tags/metadata to include
 
-All CLI flags can be provided via environment variables using the `COSMO_` prefix:
+### Filter DSL Quick Reference
 
-- `COSMO_INPUT`
-- `COSMO_OUTPUT`
-- `COSMO_FORMAT`
-- `COSMO_FILTERS`
-- `COSMO_NODE_CACHE`
-- `COSMO_NODE_CACHE_MODE`
-- `COSMO_NODE_CACHE_MAX_NODES`
-- `COSMO_ALL_TAGS`
-- `COSMO_VERBOSE`
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `key` | Tag exists | `highway` |
+| `key=value` | Exact match | `highway=primary` |
+| `key=v1\|v2` | Match any value | `amenity=cafe\|restaurant` |
+| `expr1 & expr2` | Logical AND | `highway & name` |
+| `expr1 \| expr2` | Logical OR | `amenity \| shop` |
+| `key=*pattern*` | Glob matching | `highway=*_link` |
+| `key>=value` | Numeric comparison | `lanes>=2` |
 
-## Notes on built-in Sinks
+**See the [Filter YAML Guide](docs/filter_yaml_guide.md) for complete syntax and examples**
 
-GeoParquet output includes a `geometry` column (WKB) plus explicit columns from the filters YAML. A `properties` JSON column is also included for any extra fields (tags/metadata) not mapped to explicit columns.
+### Column Sources
 
-GeoParquet is not sorted spatially. Best practice in the geoparquet world is to use a Hilbert R-tree for spatial indexing. Cosmo does not do this. Chris Holmes has some practical advice [here](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+Extract data from OSM features:
 
-GeoJSONL output writes one `Feature` per line and supports streaming to stdout with `--output -` so you can do `cosmo --output - | tippecanoe` for example. Parquet and GeoJSON outputs do not support stdout. Input must be a file path (stdin is not supported).
+| Source | Description | Example |
+|--------|-------------|---------|
+| `tag:key` | OSM tag value | `source: tag:name` |
+| `meta:field` | Metadata field (id, version, timestamp, uid, user, changeset, visible) | `source: meta:id` |
+| `tags` | All tags as JSON | `source: tags` (requires `type: json`) |
+| `meta` | All metadata as JSON | `source: meta` (requires `type: json`) |
+| `refs` | Way node IDs as JSON array | `source: refs` (requires `type: json`) |
+| `mapping:name` | Apply categorization mapping | `source: mapping:poi_class` |
+| `expr:CEL` | Compute with CEL expression | `source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'` |
 
-## Developing Sinks
+**Column Types:** `string` (default), `integer`, `float`, `json`
 
-See `docs/sinks.md` for the sink interface and implementation notes.
+**See the [Filter YAML Guide](docs/filter_yaml_guide.md#column-sources) for details and advanced features**
 
-## FAQ
+## Output Formats
 
-### Why not use osmosis/osmium/imposm/osm2pgsql?
+### GeoJSON
+Complete FeatureCollection in a single file. Best for small extracts and web mapping.
 
-These tools are all great, but serve different purposes. osm2pgsql offers really good filtering with its Flex mode and Lua scripting, but it can only write to PostgreSQL. Imposm is similar. Osmosis and Osmium are focused on converting between OSM formats and have limited filtering and output options. What I was missing is a tool that can read an OSM PBF file, apply complex filters including tag manipulation, and write to non-OSM formats. Cosmo aims to fill that gap.
+### GeoJSONL (Newline-Delimited GeoJSON)
+One Feature per line. Supports streaming to stdout (`--output -`) for piping to other tools:
+```bash
+cosmo convert -i data.osm.pbf -f config.yaml -o - | tippecanoe
+```
 
-### Why only GeoJSON, GeoJSONL, and GeoParquet outputs?
+### GeoParquet
+Columnar format with spatial metadata. Efficient for large datasets and analytics.
 
-Just pragmatic reasons. I need these formats for my work and wanted to build a tool that does them well. If you need other formats, please open an issue or contribute a sink!
+**Note:** Output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
 
-### Why not use the `gdal` crate?
+## Documentation
 
-I could have, but GDAL is a pretty big dependency with a complex build process. I wanted to keep Cosmo lightweight and easy to build/install. Implementing sinks directly allows for more control and fewer dependencies.
+- **[Filter YAML Guide](docs/filter_yaml_guide.md)** - Complete reference for filter syntax, mappings, CEL expressions, and examples
+- **[Sink Development Guide](docs/sinks.md)** - How to implement new output formats
+- **[Examples Directory](examples/)** - Sample filter configurations for common use cases
+
+## License
+
+ISC

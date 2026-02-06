@@ -26,8 +26,7 @@ cosmo/
 │   └── storage/
 │       └── mod.rs           # Node coordinate cache (sparse, dense, memory modes)
 ├── tests/
-│   ├── pbf_integration.rs   # Integration tests using fixture PBF
-│   └── pass_through_integration.rs
+│   └── pbf_integration.rs   # Integration tests using fixture PBF
 ├── examples/                # Example filter YAML files
 ├── fixture/                 # Test PBF file (library_square.osm.pbf)
 ├── docs/
