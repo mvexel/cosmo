@@ -7,7 +7,7 @@ table:
   name: roads
   # DSL filter: highway must be one of the major road types
   # The *_link glob pattern matches motorway_link, trunk_link, etc.
-  filter: 'highway=motorway|trunk|primary|secondary|tertiary|*_link'
+  filter: "highway=motorway|trunk|primary|secondary|tertiary|*_link"
 
   geometry:
     way: linestring
@@ -18,11 +18,9 @@ table:
   columns:
     - name: name
       source: tag:name
-      type: string
 
     - name: ref
       source: tag:ref
-      type: string
 
     - name: lanes
       source: tag:lanes
@@ -30,20 +28,16 @@ table:
 
     - name: maxspeed
       source: tag:maxspeed
-      type: string
 
     - name: highway_type
       source: tag:highway
-      type: string
 
     - name: oneway
       source: tag:oneway
-      type: string
 
     # OSM metadata fields
     - name: user_name
       source: meta:user
-      type: string
 
     - name: user_id
       source: meta:uid
@@ -55,4 +49,3 @@ table:
 
     - name: edited_at
       source: meta:timestamp
-      type: string

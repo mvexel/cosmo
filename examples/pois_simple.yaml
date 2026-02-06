@@ -8,7 +8,7 @@ table:
   # DSL filter: match any of these amenity/tourism/shop values
   # Syntax: tag=value1|value2|value3 matches any of the listed values
   #         expr1 | expr2 is boolean OR between different tag conditions
-  filter: 'amenity=restaurant|cafe|bar | tourism=museum|art_gallery | shop=bookstore'
+  filter: "amenity=restaurant|cafe|bar | tourism=museum|art_gallery | shop=bookstore"
 
   geometry:
     closed_way: centroid
@@ -16,8 +16,6 @@ table:
   columns:
     - name: name
       source: tag:name
-      type: string
 
     - name: cuisine
       source: tag:cuisine
-      type: string
