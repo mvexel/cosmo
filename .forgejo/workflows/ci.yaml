@@ -8,11 +8,15 @@ on:
 jobs:
   build:
     runs-on: docker
-    container:
-      image: rust:latest
     steps:
       - name: Checkout code
         uses: https://github.com/actions/checkout@v4
+
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
 
       - name: Build
         run: cargo build --release --verbose
