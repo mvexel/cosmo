@@ -12,6 +12,11 @@ jobs:
       - name: Checkout code
         uses: https://github.com/actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential pkg-config cmake libproj-dev sqlite3 libsqlite3-dev
+
       - name: Setup Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -19,7 +24,11 @@ jobs:
           source "$HOME/.cargo/env"
 
       - name: Build
-        run: cargo build --release --verbose
+        run: |
+          source "$HOME/.cargo/env"
+          cargo build --release --verbose
 
       - name: Run tests
-        run: cargo test --release --verbose
+        run: |
+          source "$HOME/.cargo/env"
+          cargo test --release --verbose
