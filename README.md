@@ -8,7 +8,15 @@
         \_____\/ \_____\/ \_____\/ \__\/ \__\/ \_____\/ 
 ```
 
-Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with optional filtering, which is arguably more useful.
+Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with really good filtering, which is arguably more useful.
+
+Why not use...
+
+- **osmium**: Equally fast. Filtering is very basic. Only OSM output formats.
+- **osm2pgsql**: Arguably better filtering with Lua scripting, but output limited to PostgreSQL
+- **gdal**: swiss army knife of geospatial data manipulation, but not great at working with the OSM file format at scale.
+
+There are many tools that fill the niche "I have OSM data but I want it in another format and transformed". Compare them and use what best fits your needs.
 
 ## Quick Start
 
