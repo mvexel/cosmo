@@ -1,5 +1,5 @@
-use crate::dsl::{FilterAst, parse_filter};
-use crate::expr::{CelProgram, compile_cel};
+use crate::dsl::{parse_filter, FilterAst};
+use crate::expr::{compile_cel, CelProgram};
 use crate::mapping::{Mapping, MappingConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,7 +45,9 @@ impl FiltersConfig {
 
         // If single table: syntax provided, add it
         if let Some(ref single_table) = self.table {
-            let table_name = single_table.name.as_ref()
+            let table_name = single_table
+                .name
+                .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Single table must have a name field"))?;
 
             if tables.contains_key(table_name) {
@@ -81,8 +83,9 @@ impl FiltersConfig {
         let mut compiled_tables = HashMap::new();
         for (table_name, table_config) in raw_tables {
             let filter = match &table_config.filter {
-                FilterInput::Dsl(s) => parse_filter(s)
-                    .map_err(|e| anyhow::anyhow!("Filter error in table '{}': {}", table_name, e))?,
+                FilterInput::Dsl(s) => parse_filter(s).map_err(|e| {
+                    anyhow::anyhow!("Filter error in table '{}': {}", table_name, e)
+                })?,
                 FilterInput::Structured(expr) => convert_structured_filter(expr)?,
             };
 
@@ -221,7 +224,7 @@ impl Default for GeometryConfig {
             way: WaySetting::default(),
             closed_way: ClosedWayMode::Polygon,
             node: true,
-            relation: true,
+            relation: false,
         }
     }
 }
@@ -302,6 +305,7 @@ pub struct CompiledConfig {
 }
 
 pub struct CompiledTable {
+    #[allow(dead_code)]
     pub name: String,
     pub filter: FilterAst,
     pub columns: Vec<CompiledColumn>,
@@ -434,11 +438,17 @@ pub enum ColumnType {
     Json,
 }
 
+impl Default for ColumnType {
+    fn default() -> Self {
+        ColumnType::String
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ColumnConfig {
     pub name: String,
     pub source: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub col_type: ColumnType,
 }
 
@@ -575,7 +585,7 @@ mod tests {
         assert!(config.way.enabled());
         assert!(matches!(config.closed_way, ClosedWayMode::Polygon));
         assert!(config.node);
-        assert!(config.relation);
+        assert!(!config.relation);
     }
 
     // ============================================

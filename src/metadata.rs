@@ -1,6 +1,6 @@
 use osmpbf::{DenseNodeInfo, Info};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 pub struct MetadataFields {
     pub id: i64,

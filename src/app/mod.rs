@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossbeam_channel::bounded;
 use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
-use crate::sinks::{ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink};
+use crate::sinks::{
+    ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
+};
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
 
@@ -38,7 +40,7 @@ pub enum Commands {
 #[derive(Args)]
 pub struct ValidateArgs {
     /// Filter configuration file (YAML)
-    #[arg(short, long, env = "COSMO_FILTERS")]
+    #[arg(env = "COSMO_FILTERS")]
     pub filters: PathBuf,
 }
 
@@ -134,8 +136,6 @@ pub enum OutputFormat {
     #[value(name = "csv")]
     Csv,
 }
-
-pub type SinkHandle = Arc<Mutex<Box<dyn DataSink + Send>>>;
 
 pub fn resolve_node_cache_mode(
     requested: NodeCacheMode,
@@ -262,7 +262,11 @@ pub fn init_sink(
         OutputFormat::Csv => {
             let columns = collect_columns(config)?;
             if output == Path::new("-") {
-                tracing::info!("Sink: {} -> stdout ({} columns)", output_format_label(format), columns.len());
+                tracing::info!(
+                    "Sink: {} -> stdout ({} columns)",
+                    output_format_label(format),
+                    columns.len()
+                );
                 Ok(Box::new(CsvWktSink::stdout(columns)?))
             } else {
                 tracing::info!(
@@ -284,9 +288,7 @@ pub fn init_sinks(
 ) -> Result<SinkMap> {
     // Validate output is not stdout for multi-table
     if output_dir == Path::new("-") {
-        anyhow::bail!(
-            "Multi-table output to stdout is not supported; specify a directory path"
-        );
+        anyhow::bail!("Multi-table output to stdout is not supported; specify a directory path");
     }
 
     // Create output directory if it doesn't exist
@@ -295,7 +297,10 @@ pub fn init_sinks(
             .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
         tracing::info!("Created output directory: {:?}", output_dir);
     } else if !output_dir.is_dir() {
-        anyhow::bail!("Output path exists but is not a directory: {:?}", output_dir);
+        anyhow::bail!(
+            "Output path exists but is not a directory: {:?}",
+            output_dir
+        );
     }
 
     let mut sinks = HashMap::new();
@@ -337,7 +342,10 @@ pub fn init_sinks(
 
 pub fn collect_columns(config: &CompiledConfig) -> Result<Vec<ColumnSpec>> {
     // For single table compatibility, get the first (and only) table
-    let table = config.tables.values().next()
+    let table = config
+        .tables
+        .values()
+        .next()
         .ok_or_else(|| anyhow!("No tables defined in config"))?;
     collect_columns_for_table(table)
 }
@@ -357,9 +365,10 @@ fn collect_columns_for_table(table: &CompiledTable) -> Result<Vec<ColumnSpec>> {
 }
 
 pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
-    config.tables.values().any(|table| {
-        table.geometry.way.enabled() || table.geometry.relation
-    })
+    config
+        .tables
+        .values()
+        .any(|table| table.geometry.way.enabled() || table.geometry.relation)
 }
 
 pub fn pass1_index_nodes(
@@ -640,11 +649,11 @@ pub fn process_pbf(
 ) -> Result<HashMap<String, u64>> {
     tracing::info!("Node cache required: {}", needs_nodes);
     if needs_nodes {
-        if verbose
-            && let Ok(metadata) = std::fs::metadata(&args.input)
-        {
-            let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
-            tracing::info!("Input size: {:.2} GB", size_gb);
+        if verbose {
+            if let Ok(metadata) = std::fs::metadata(&args.input) {
+                let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+                tracing::info!("Input size: {:.2} GB", size_gb);
+            }
         }
         // Resolve auto mode to concrete mode based on input file size
         let (resolved_mode, mode_desc) =

@@ -98,7 +98,8 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".geojson").unwrap();
         let mut sink = GeoJsonSink::new(temp_file.path()).unwrap();
 
-        sink.add_feature(create_point_row("Test", 0.0, 0.0)).unwrap();
+        sink.add_feature(create_point_row("Test", 0.0, 0.0))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -114,9 +115,12 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".geojson").unwrap();
         let mut sink = GeoJsonSink::new(temp_file.path()).unwrap();
 
-        sink.add_feature(create_point_row("First", 0.0, 0.0)).unwrap();
-        sink.add_feature(create_point_row("Second", 1.0, 1.0)).unwrap();
-        sink.add_feature(create_point_row("Third", 2.0, 2.0)).unwrap();
+        sink.add_feature(create_point_row("First", 0.0, 0.0))
+            .unwrap();
+        sink.add_feature(create_point_row("Second", 1.0, 1.0))
+            .unwrap();
+        sink.add_feature(create_point_row("Third", 2.0, 2.0))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -143,7 +147,8 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".geojson").unwrap();
         let mut sink = GeoJsonSink::new(temp_file.path()).unwrap();
 
-        sink.add_feature(create_point_row("Test", -0.1, 51.5)).unwrap();
+        sink.add_feature(create_point_row("Test", -0.1, 51.5))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -194,10 +199,16 @@ mod tests {
 
         let point = Point::new(0.0, 0.0);
         let mut columns = HashMap::new();
-        columns.insert("name".to_string(), ColumnValue::String("FromColumn".to_string()));
+        columns.insert(
+            "name".to_string(),
+            ColumnValue::String("FromColumn".to_string()),
+        );
 
         let mut extras = Map::new();
-        extras.insert("name".to_string(), serde_json::Value::String("FromExtras".to_string()));
+        extras.insert(
+            "name".to_string(),
+            serde_json::Value::String("FromExtras".to_string()),
+        );
 
         let row = FeatureRow {
             geometry: geo_types::Geometry::Point(point),
@@ -242,7 +253,13 @@ mod tests {
         let mut sink = GeoJsonSink::new(temp_file.path()).unwrap();
 
         let polygon = Polygon::new(
-            LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+            LineString::from(vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+            ]),
             vec![],
         );
         let row = FeatureRow {

@@ -13,10 +13,10 @@
 //!   (expr)                  - grouping
 
 mod ast;
+mod eval;
 mod lexer;
 mod parser;
-mod eval;
 
 pub use ast::*;
-pub use parser::parse_filter;
 pub use eval::evaluate_filter;
+pub use parser::parse_filter;

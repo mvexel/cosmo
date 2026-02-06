@@ -1,6 +1,6 @@
 //! Mapping rule definitions and evaluation.
 
-use crate::dsl::{FilterAst, evaluate_filter, parse_filter};
+use crate::dsl::{evaluate_filter, parse_filter, FilterAst};
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;

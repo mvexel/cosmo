@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use memmap2::{Mmap, MmapMut};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -219,19 +219,19 @@ fn write_sparse_entry<W: Write>(writer: &mut W, id: u64, packed: i64) -> Result<
 ///
 /// # Methods
 ///
-/// - `put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()>`  
+/// - `put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()>`
 ///   Inserts a node with the given `id`, latitude (`lat`), and longitude (`lon`) into the store.
-///   The coordinates are packed for storage efficiency.  
-///   Maintains a flag to track if the inserted IDs are sorted.  
-///   Increments the internal count of stored nodes.  
+///   The coordinates are packed for storage efficiency.
+///   Maintains a flag to track if the inserted IDs are sorted.
+///   Increments the internal count of stored nodes.
 ///   Returns an error if writing the entry fails.
 ///
-/// - `finalize(self) -> Result<NodeStoreReader>`  
-///   Finalizes the writing process and returns a `NodeStoreReader` for reading the stored nodes.  
-///   Flushes and closes the underlying writer.  
-///   If the inserted IDs are not sorted, reads all entries, sorts them by ID, and writes them to a new temporary file.  
-///   Validates that the file size matches the expected number of entries and entry size.  
-///   Memory-maps the file for efficient reading.  
+/// - `finalize(self) -> Result<NodeStoreReader>`
+///   Finalizes the writing process and returns a `NodeStoreReader` for reading the stored nodes.
+///   Flushes and closes the underlying writer.
+///   If the inserted IDs are not sorted, reads all entries, sorts them by ID, and writes them to a new temporary file.
+///   Validates that the file size matches the expected number of entries and entry size.
+///   Memory-maps the file for efficient reading.
 ///   Returns an error if any I/O or validation step fails.
 ///
 /// # Errors
@@ -244,13 +244,13 @@ fn write_sparse_entry<W: Write>(writer: &mut W, id: u64, packed: i64) -> Result<
 impl SparseNodeStoreWriter {
     fn put(&mut self, id: u64, lat: f64, lon: f64) -> Result<()> {
         let packed = pack_coords(lat, lon);
-        if let Some(last_id) = self.last_id
-            && id < last_id
-        {
-            self.is_sorted = false;
-            return Err(anyhow!(
-                "NodeStore: Node IDs are out of order for sparse cache; run `osmium sort` to sort by type then id"
-            ));
+        if let Some(last_id) = self.last_id {
+            if id < last_id {
+                self.is_sorted = false;
+                return Err(anyhow!(
+                    "NodeStore: Node IDs are out of order for sparse cache; run `osmium sort` to sort by type then id"
+                ));
+            }
         }
         self.last_id = Some(id);
         self.count = self.count.saturating_add(1);
@@ -316,16 +316,10 @@ impl SparseNodeStoreReader {
             let mid = low + (high - low) / 2;
             let offset = (mid as usize) * SPARSE_ENTRY_SIZE;
             let data = &self.mmap[offset..offset + SPARSE_ENTRY_SIZE];
-            let mid_id = u64::from_le_bytes(
-                data[0..8]
-                    .try_into()
-                    .expect("slice is exactly 8 bytes"),
-            );
-            let packed = i64::from_le_bytes(
-                data[8..16]
-                    .try_into()
-                    .expect("slice is exactly 8 bytes"),
-            );
+            let mid_id =
+                u64::from_le_bytes(data[0..8].try_into().expect("slice is exactly 8 bytes"));
+            let packed =
+                i64::from_le_bytes(data[8..16].try_into().expect("slice is exactly 8 bytes"));
 
             match mid_id.cmp(&id) {
                 std::cmp::Ordering::Less => low = mid + 1,
@@ -405,12 +399,8 @@ impl MemoryNodeStore {
 }
 
 fn decode_coords(data: &[u8]) -> (f64, f64) {
-    let lon_bytes: [u8; 4] = data[0..4]
-        .try_into()
-        .expect("slice is exactly 4 bytes");
-    let lat_bytes: [u8; 4] = data[4..8]
-        .try_into()
-        .expect("slice is exactly 4 bytes");
+    let lon_bytes: [u8; 4] = data[0..4].try_into().expect("slice is exactly 4 bytes");
+    let lat_bytes: [u8; 4] = data[4..8].try_into().expect("slice is exactly 4 bytes");
 
     let lon_fixed = i32::from_le_bytes(lon_bytes);
     let lat_fixed = i32::from_le_bytes(lat_bytes);

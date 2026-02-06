@@ -2,4 +2,4 @@
 
 mod cel;
 
-pub use cel::{CelContext, CelProgram, cel_value_to_string, compile_cel, evaluate_cel};
+pub use cel::{cel_value_to_string, compile_cel, evaluate_cel, CelContext, CelProgram};

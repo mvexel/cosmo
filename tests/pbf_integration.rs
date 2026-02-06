@@ -577,7 +577,10 @@ table:
     let lines = run_cosmo(filters);
     let features = parse_features(&lines);
 
-    assert!(!features.is_empty(), "should find bakery, books, or florist shops");
+    assert!(
+        !features.is_empty(),
+        "should find bakery, books, or florist shops"
+    );
 
     // All features should have shop in the allowed values
     for feature in &features {
@@ -803,10 +806,7 @@ table:
     );
 
     // Verify it has features array
-    assert!(
-        geojson["features"].is_array(),
-        "should have features array"
-    );
+    assert!(geojson["features"].is_array(), "should have features array");
 
     let features = geojson["features"].as_array().unwrap();
     assert!(!features.is_empty(), "should have features");

@@ -15,7 +15,7 @@ use crate::dsl::evaluate_filter;
 use crate::expr::{cel_value_to_string, evaluate_cel};
 use crate::mapping::evaluate_mapping;
 use crate::metadata::{
-    MetadataFields, build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value,
+    build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value, MetadataFields,
 };
 use crate::sinks::{ColumnValue, FeatureRow};
 use crate::storage::NodeStoreReader;
@@ -298,7 +298,8 @@ pub fn process_block_collect(
 
                         if coords.len() >= 2 {
                             let line_string = LineString::from(coords.clone());
-                            let geometry = build_way_geometry(&table.geometry, line_string, &coords);
+                            let geometry =
+                                build_way_geometry(&table.geometry, line_string, &coords);
                             if geometry_intersects_bbox(&geometry, runtime.bbox) {
                                 let row = build_feature_row(
                                     geometry,

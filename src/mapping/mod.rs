@@ -5,4 +5,4 @@
 
 mod rules;
 
-pub use rules::{Mapping, MappingConfig, evaluate_mapping};
+pub use rules::{evaluate_mapping, Mapping, MappingConfig};

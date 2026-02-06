@@ -15,7 +15,8 @@ impl CsvWktSink {
     pub fn new<P: AsRef<Path>>(path: P, columns: Vec<ColumnSpec>) -> Result<Self> {
         let file = File::create(path.as_ref())
             .with_context(|| format!("Failed to create CSV file: {:?}", path.as_ref()))?;
-        let writer = csv::Writer::from_writer(BufWriter::new(Box::new(file) as Box<dyn Write + Send>));
+        let writer =
+            csv::Writer::from_writer(BufWriter::new(Box::new(file) as Box<dyn Write + Send>));
         Ok(Self {
             writer,
             columns,
@@ -24,7 +25,9 @@ impl CsvWktSink {
     }
 
     pub fn stdout(columns: Vec<ColumnSpec>) -> Result<Self> {
-        let writer = csv::Writer::from_writer(BufWriter::new(Box::new(std::io::stdout()) as Box<dyn Write + Send>));
+        let writer = csv::Writer::from_writer(BufWriter::new(
+            Box::new(std::io::stdout()) as Box<dyn Write + Send>
+        ));
         Ok(Self {
             writer,
             columns,
@@ -79,7 +82,9 @@ impl DataSink for CsvWktSink {
         }
 
         // Convert geometry to WKT using geozero
-        let wkt = row.geometry.to_wkt()
+        let wkt = row
+            .geometry
+            .to_wkt()
             .context("Failed to convert geometry to WKT")?;
         record.push(wkt);
 
@@ -96,16 +101,22 @@ impl DataSink for CsvWktSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ColumnType;
     use geo_types::{LineString, Point, Polygon};
     use serde_json::Map;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
-    use crate::config::ColumnType;
 
     fn test_columns() -> Vec<ColumnSpec> {
         vec![
-            ColumnSpec { name: "name".to_string(), col_type: ColumnType::String },
-            ColumnSpec { name: "value".to_string(), col_type: ColumnType::Integer },
+            ColumnSpec {
+                name: "name".to_string(),
+                col_type: ColumnType::String,
+            },
+            ColumnSpec {
+                name: "value".to_string(),
+                col_type: ColumnType::Integer,
+            },
         ]
     }
 
@@ -126,7 +137,8 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".csv").unwrap();
         let mut sink = CsvWktSink::new(temp_file.path(), test_columns()).unwrap();
 
-        sink.add_feature(create_point_row("Test", 42, -0.1, 51.5)).unwrap();
+        sink.add_feature(create_point_row("Test", 42, -0.1, 51.5))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -144,9 +156,12 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".csv").unwrap();
         let mut sink = CsvWktSink::new(temp_file.path(), test_columns()).unwrap();
 
-        sink.add_feature(create_point_row("First", 1, 0.0, 0.0)).unwrap();
-        sink.add_feature(create_point_row("Second", 2, 1.0, 1.0)).unwrap();
-        sink.add_feature(create_point_row("Third", 3, 2.0, 2.0)).unwrap();
+        sink.add_feature(create_point_row("First", 1, 0.0, 0.0))
+            .unwrap();
+        sink.add_feature(create_point_row("Second", 2, 1.0, 1.0))
+            .unwrap();
+        sink.add_feature(create_point_row("Third", 3, 2.0, 2.0))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -170,7 +185,8 @@ mod tests {
         let temp_file = NamedTempFile::with_suffix(".csv").unwrap();
         let mut sink = CsvWktSink::new(temp_file.path(), test_columns()).unwrap();
 
-        sink.add_feature(create_point_row("Name, with \"quotes\"", 1, 0.0, 0.0)).unwrap();
+        sink.add_feature(create_point_row("Name, with \"quotes\"", 1, 0.0, 0.0))
+            .unwrap();
         sink.finish().unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
@@ -207,11 +223,20 @@ mod tests {
         let mut sink = CsvWktSink::new(temp_file.path(), test_columns()).unwrap();
 
         let polygon = Polygon::new(
-            LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
+            LineString::from(vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (0.0, 0.0),
+            ]),
             vec![],
         );
         let mut columns = HashMap::new();
-        columns.insert("name".to_string(), ColumnValue::String("Building".to_string()));
+        columns.insert(
+            "name".to_string(),
+            ColumnValue::String("Building".to_string()),
+        );
         columns.insert("value".to_string(), ColumnValue::Integer(50));
 
         let row = FeatureRow {
@@ -231,8 +256,14 @@ mod tests {
     fn handles_missing_columns() {
         let temp_file = NamedTempFile::with_suffix(".csv").unwrap();
         let columns = vec![
-            ColumnSpec { name: "name".to_string(), col_type: ColumnType::String },
-            ColumnSpec { name: "missing".to_string(), col_type: ColumnType::String },
+            ColumnSpec {
+                name: "name".to_string(),
+                col_type: ColumnType::String,
+            },
+            ColumnSpec {
+                name: "missing".to_string(),
+                col_type: ColumnType::String,
+            },
         ];
         let mut sink = CsvWktSink::new(temp_file.path(), columns).unwrap();
 

@@ -16,8 +16,8 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use app::{
-    Cli, Commands, ConvertArgs, OutputFormat, ValidateArgs, init_sink, init_sinks,
-    needs_node_store_compiled, process_pbf, summarize_filters_compiled,
+    init_sink, init_sinks, needs_node_store_compiled, process_pbf, summarize_filters_compiled, Cli,
+    Commands, ConvertArgs, OutputFormat, ValidateArgs,
 };
 use config::{FiltersConfig, RuntimeConfig};
 
@@ -75,8 +75,12 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
     Load filter config
     ******************
     */
-    let filters = FiltersConfig::load(&args.filters)
-        .with_context(|| format!("Failed to load filter configuration from {:?}", args.filters))?;
+    let filters = FiltersConfig::load(&args.filters).with_context(|| {
+        format!(
+            "Failed to load filter configuration from {:?}",
+            args.filters
+        )
+    })?;
     let compiled = Arc::new(
         filters
             .compile()
@@ -87,7 +91,7 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
     let summary = summarize_filters_compiled(&compiled);
     tracing::info!("Config: {}", summary);
 
-    // Log each table's details
+    // Log each table's details (verbose only)
     for (table_name, table) in &compiled.tables {
         tracing::info!(
             "  - Table '{}': {} columns (nodes: {}, ways: {}, relations: {})",
@@ -99,10 +103,8 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
         );
     }
 
-    tracing::info!(
-        "Configuration valid: {} table(s) defined.",
-        compiled.tables.len()
-    );
+    // Always print success message to stdout
+    println!("✓ Configuration is valid");
 
     Ok(())
 }
@@ -145,8 +147,12 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     Load filter config
     ******************
     */
-    let filters = FiltersConfig::load(&args.filters)
-        .with_context(|| format!("Failed to load filter configuration from {:?}", args.filters))?;
+    let filters = FiltersConfig::load(&args.filters).with_context(|| {
+        format!(
+            "Failed to load filter configuration from {:?}",
+            args.filters
+        )
+    })?;
     let compiled = Arc::new(
         filters
             .compile()
@@ -236,7 +242,14 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     */
     let needs_nodes = needs_node_store_compiled(&compiled);
     let start = std::time::Instant::now();
-    let match_counts = process_pbf(&args, verbose, compiled, runtime, sinks.clone(), needs_nodes)?;
+    let match_counts = process_pbf(
+        &args,
+        verbose,
+        compiled,
+        runtime,
+        sinks.clone(),
+        needs_nodes,
+    )?;
 
     /*
     ********************

@@ -10,7 +10,11 @@ pub fn evaluate_filter(ast: &FilterAst, tags: &HashMap<String, String>) -> bool 
 
         FilterAst::TagExists { key, negated } => {
             let exists = tags.contains_key(key);
-            if *negated { !exists } else { exists }
+            if *negated {
+                !exists
+            } else {
+                exists
+            }
         }
 
         FilterAst::TagMatch { key, values } => match tags.get(key) {

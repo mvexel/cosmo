@@ -13,7 +13,7 @@
 //! value      = IDENT | NUMBER | "*"
 
 use super::ast::{CompareOp, FilterAst, TagValue};
-use super::lexer::{Token, tokenize};
+use super::lexer::{tokenize, Token};
 
 /// Parser state.
 struct Parser {
@@ -167,7 +167,7 @@ impl Parser {
             }
             Some(op) => {
                 self.advance(); // consume operator
-                // For non-equality comparisons, expect a number
+                                // For non-equality comparisons, expect a number
                 match self.advance() {
                     Token::Number(n) => Ok(FilterAst::NumericCompare { key, op, value: n }),
                     other => Err(format!("Expected number after {:?}, got {:?}", op, other)),
