@@ -1,6 +1,6 @@
 # ADR-001: Relation Support — Scope and Storage Strategy
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-31
 **Deciders:** TBD
 
@@ -17,34 +17,44 @@ The fixture PBF (Library Square, Salt Lake City) contains 26 relations and 431 w
 
 ## Decision
 
-### 1. Multipolygon relations only (initial scope)
+### 1. Multipolygon and boundary relations
 
-We will implement `type=multipolygon` relations only. This covers the highest-value use case: polygon features whose geometry is assembled from member ways with `role=outer` and `role=inner`.
+We implement `type=multipolygon` and `type=boundary` relations. Both use identical geometry: outer/inner way members assembled into polygon rings. The `type=boundary` case was initially excluded under the assumption it needed different geometry handling — it does not.
 
 **Not in scope:**
 - `type=route` relations (would produce `MultiLineString` — different geometry pipeline)
-- `type=boundary` relations without multipolygon geometry
 - `type=restriction`, `type=public_transport`, and other non-geometric relation types
 
-**Rationale:** Multipolygon is the most common relation type in OSM and the only one that produces polygon geometry compatible with the existing sink pipeline. Adding other types requires `MultiLineString` support in all sinks, which is a separate concern.
+**Rationale:** Multipolygon and boundary are the two relation types that produce polygon geometry compatible with the existing sink pipeline. Route relations require `MultiLineString` support in all sinks, which is a separate concern.
 
-### 2. In-memory way store (extract-scale)
+### 2. 3-pass architecture for planet-scale support
 
-During pass 1 (node indexing), we will also collect way member references into an in-memory `HashMap<i64, Vec<i64>>` mapping `way_id → [node_ref_ids]`. This store is consulted during pass 2 when assembling relation geometries.
+To avoid storing all ~900M ways from a planet file in memory, we use a 3-pass approach when any table has `relation: true`:
 
-**Trade-offs:**
+| Pass | Purpose | What it reads | What it produces |
+|------|---------|---------------|------------------|
+| 0 | Scan relations for member way IDs | Relations only | `HashSet<i64>` of needed way IDs |
+| 1 | Index nodes + collect filtered ways | Nodes + filtered ways | `NodeStore` + `WayStore` (only relation-referenced ways) |
+| 2 | Process all elements | Everything | Output features |
 
-| Approach | Memory (planet) | Memory (city extract) | Complexity |
-|----------|----------------|----------------------|------------|
-| In-memory HashMap | ~70 GB (infeasible) | ~10 MB | Low |
-| Disk-backed (like node store) | ~10 GB on disk | ~1 MB on disk | High — variable-length entries |
-| Third PBF pass | 0 extra | 0 extra | Medium — slower |
+When no table has `relation: true`, pass 0 is skipped and pass 1 does not collect ways — the pipeline remains 2-pass (or 1-pass for nodes-only).
 
-**Rationale:** Cosmo's primary use case is regional extracts, not planet-scale processing. An in-memory way store is simple, fast, and adequate for extracts up to country-scale (~1-2 GB RAM for a country like Germany). Planet-scale support can be added later with a disk-backed way store following the existing `NodeStore` pattern.
+**Memory analysis for planet-scale:**
+
+| Component | Size | Notes |
+|-----------|------|-------|
+| Way ID set (pass 0 output) | ~160 MB | ~20M i64 entries in HashSet |
+| Filtered way store | ~2 GB | ~20M ways × ~100 bytes each |
+| Node store | Unchanged | Dense/sparse modes already handle planet scale |
+
+**Trade-off vs alternatives:**
+- In-memory HashMap of ALL ways: ~100 GB — infeasible
+- Disk-backed way store: 2 passes but complex variable-length storage
+- 3-pass with filtered collection: simple, ~2 GB RAM, one extra sequential read (~2-3 min on planet)
 
 ### 3. Ring assembly from multi-way segments
 
-OSM multipolygon outer/inner rings are frequently split across multiple ways that share endpoints. We must join way segments end-to-end to form complete rings before creating polygons.
+OSM multipolygon outer/inner rings are frequently split across multiple ways that share endpoints. We join way segments end-to-end to form complete rings before creating polygons.
 
 Algorithm:
 1. Group member ways by role (`outer` / `inner`)
@@ -56,6 +66,7 @@ Algorithm:
 
 ## Consequences
 
-- **Extract-only limitation:** Running Cosmo with `relation: true` on a planet PBF will OOM. We should document this and emit a warning when the input exceeds a size threshold (e.g., >5 GB) and relations are enabled. A future ADR can address disk-backed way storage.
-- **Incomplete extracts:** Relations referencing ways outside the extract will produce incomplete or missing geometries. We handle this the same way as missing nodes in ways: warn and skip.
-- **Config default:** `relation` defaults to `false` in `GeometryConfig` (already the case), so this is opt-in. Existing configs are unaffected.
+- **Opt-in:** `relation` defaults to `false` in `GeometryConfig`, so this is opt-in. Existing configs are unaffected.
+- **Incomplete extracts:** Relations referencing ways outside the extract will produce incomplete or missing geometries. Handled same as missing nodes in ways: warn and skip.
+- **Planet-scale cost:** Extra sequential PBF read for pass 0 (~2-3 minutes). Acceptable given the alternative is OOM.
+- **Large file warning:** When input exceeds 5 GB and relations are enabled, emit a warning about memory usage.

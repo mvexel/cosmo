@@ -569,9 +569,9 @@ pub fn process_block_collect(
             Element::Relation(rel) => {
                 let tag_map = build_tag_map(rel.tags());
 
-                // Only process type=multipolygon relations
-                let is_multipolygon = tag_map.get("type").is_some_and(|v| v == "multipolygon");
-                if !is_multipolygon {
+                // Process type=multipolygon and type=boundary relations
+                let rel_type = tag_map.get("type").map(|s| s.as_str());
+                if !matches!(rel_type, Some("multipolygon" | "boundary")) {
                     continue;
                 }
 
