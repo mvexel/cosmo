@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {:#}", e);
+            eprintln!("Error: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -259,7 +259,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     for sink in sinks.values() {
         let mut s = sink
             .lock()
-            .map_err(|e| anyhow::anyhow!("Sink lock poisoned: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Sink lock poisoned: {e}"))?;
         s.finish().context("Pipeline: Failed to finalize sink")?;
     }
 

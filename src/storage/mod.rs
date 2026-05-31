@@ -834,15 +834,11 @@ mod tests {
 
             assert!(
                 (lat - unpacked_lat).abs() < 1e-7,
-                "lat mismatch: {} vs {}",
-                lat,
-                unpacked_lat
+                "lat mismatch: {lat} vs {unpacked_lat}"
             );
             assert!(
                 (lon - unpacked_lon).abs() < 1e-7,
-                "lon mismatch: {} vs {}",
-                lon,
-                unpacked_lon
+                "lon mismatch: {lon} vs {unpacked_lon}"
             );
         }
     }

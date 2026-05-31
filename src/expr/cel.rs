@@ -29,7 +29,7 @@ pub struct CelContext<'a> {
 /// Compile a CEL expression string into a program.
 pub fn compile_cel(source: &str) -> Result<CelProgram> {
     let program =
-        Program::compile(source).map_err(|e| anyhow::anyhow!("CEL compile error: {}", e))?;
+        Program::compile(source).map_err(|e| anyhow::anyhow!("CEL compile error: {e}"))?;
 
     Ok(CelProgram {
         program: Arc::new(program),
@@ -44,12 +44,12 @@ pub fn evaluate_cel(program: &CelProgram, ctx: &CelContext) -> Result<Value> {
     // Add tags as a map variable
     cel_ctx
         .add_variable("tags", ctx.tags.clone())
-        .map_err(|e| anyhow::anyhow!("CEL context error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("CEL context error: {e}"))?;
 
     // Add meta as a map variable
     cel_ctx
         .add_variable("meta", ctx.meta.clone())
-        .map_err(|e| anyhow::anyhow!("CEL context error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("CEL context error: {e}"))?;
 
     // CEL natively supports 'key in tags' and 'tags[key]'
     // or tags.get('key', 'default') if macros are enabled (not yet in this version)
@@ -58,7 +58,7 @@ pub fn evaluate_cel(program: &CelProgram, ctx: &CelContext) -> Result<Value> {
     program
         .program
         .execute(&cel_ctx)
-        .map_err(|e| anyhow::anyhow!("CEL execution error: {}", e))
+        .map_err(|e| anyhow::anyhow!("CEL execution error: {e}"))
 }
 
 /// Convert a CEL Value to a string for output.
@@ -70,7 +70,7 @@ pub fn cel_value_to_string(value: &Value) -> Option<String> {
         Value::Float(f) => Some(f.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         Value::Null => None,
-        _ => Some(format!("{:?}", value)),
+        _ => Some(format!("{value:?}")),
     }
 }
 

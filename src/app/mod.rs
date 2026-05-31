@@ -98,21 +98,19 @@ fn parse_bbox(s: &str) -> Result<[f64; 4], String> {
         ));
     }
     let coords: Result<Vec<f64>, _> = parts.iter().map(|p| p.trim().parse::<f64>()).collect();
-    let coords = coords.map_err(|e| format!("invalid bbox coordinate: {}", e))?;
+    let coords = coords.map_err(|e| format!("invalid bbox coordinate: {e}"))?;
 
     let [min_lon, min_lat, max_lon, max_lat] = [coords[0], coords[1], coords[2], coords[3]];
 
     // Validate
     if min_lon > max_lon {
         return Err(format!(
-            "bbox min_lon ({}) must be <= max_lon ({})",
-            min_lon, max_lon
+            "bbox min_lon ({min_lon}) must be <= max_lon ({max_lon})"
         ));
     }
     if min_lat > max_lat {
         return Err(format!(
-            "bbox min_lat ({}) must be <= max_lat ({})",
-            min_lat, max_lat
+            "bbox min_lat ({min_lat}) must be <= max_lat ({max_lat})"
         ));
     }
     if min_lat < -90.0 || max_lat > 90.0 {
@@ -153,12 +151,12 @@ pub fn resolve_node_cache_mode(
             if file_size >= dense_threshold {
                 (
                     NodeCacheMode::Dense,
-                    format!("dense (auto-selected for {:.1} GB input)", size_gb),
+                    format!("dense (auto-selected for {size_gb:.1} GB input)"),
                 )
             } else {
                 (
                     NodeCacheMode::Sparse,
-                    format!("sparse (auto-selected for {:.1} GB input)", size_gb),
+                    format!("sparse (auto-selected for {size_gb:.1} GB input)"),
                 )
             }
         }
@@ -181,8 +179,7 @@ pub fn summarize_filters_compiled(config: &CompiledConfig) -> String {
     }
 
     format!(
-        "{} table(s), {} total columns (nodes: {}, ways: {}, relations: {})",
-        table_count, total_cols, has_node, has_way, has_rel
+        "{table_count} table(s), {total_cols} total columns (nodes: {has_node}, ways: {has_way}, relations: {has_rel})"
     )
 }
 
@@ -307,12 +304,11 @@ pub fn init_sinks(
     // Create output directory if it doesn't exist
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir)
-            .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
+            .with_context(|| format!("Failed to create output directory: {output_dir:?}"))?;
         tracing::info!("Created output directory: {:?}", output_dir);
     } else if !output_dir.is_dir() {
         anyhow::bail!(
-            "Output path exists but is not a directory: {:?}",
-            output_dir
+            "Output path exists but is not a directory: {output_dir:?}"
         );
     }
 
@@ -326,7 +322,7 @@ pub fn init_sinks(
     };
 
     for (table_name, table_config) in &config.tables {
-        let file_path = output_dir.join(format!("{}.{}", table_name, extension));
+        let file_path = output_dir.join(format!("{table_name}.{extension}"));
 
         let sink: Box<dyn DataSink + Send> = match format {
             OutputFormat::GeoJson => Box::new(GeoJsonSink::new(&file_path)?),
@@ -476,7 +472,7 @@ pub fn pass1_index_nodes(
             for (id, lat, lon) in batch {
                 node_store
                     .put(id, lat, lon)
-                    .with_context(|| format!("Pipeline: Failed writing node {}", id))?;
+                    .with_context(|| format!("Pipeline: Failed writing node {id}"))?;
                 node_count += 1;
             }
             if batch_len > 0 {
@@ -525,7 +521,7 @@ pub fn pass1_index_nodes(
 
                         if !node_batch.is_empty() {
                             tx.send(node_batch).map_err(|err| {
-                                anyhow!("Pipeline: Failed to send node batch: {}", err)
+                                anyhow!("Pipeline: Failed to send node batch: {err}")
                             })?;
                         }
                         if !way_batch.is_empty() {
@@ -575,7 +571,7 @@ pub fn pass1_index_nodes(
 
                     if !node_batch.is_empty() {
                         tx.send(node_batch).map_err(|err| {
-                            anyhow!("Pipeline: Failed to send node batch: {}", err)
+                            anyhow!("Pipeline: Failed to send node batch: {err}")
                         })?;
                     }
                     Ok(())
@@ -613,8 +609,7 @@ pub fn pass1_index_nodes(
                 .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             return Err(anyhow!(
-                "Pipeline: Node writer thread panicked: {}",
-                panic_msg
+                "Pipeline: Node writer thread panicked: {panic_msg}"
             ));
         }
     };
@@ -651,7 +646,7 @@ where
                 if let Some(sink_handle) = sinks_clone.get(&table_name) {
                     let mut sink = sink_handle
                         .lock()
-                        .map_err(|e| anyhow!("Sink lock poisoned: {}", e))?;
+                        .map_err(|e| anyhow!("Sink lock poisoned: {e}"))?;
                     sink.add_feature(row)?;
                     *match_counts.entry(table_name).or_insert(0) += 1;
                 } else {
@@ -682,7 +677,7 @@ where
             let batch = processor.process_block(block)?;
             if !batch.is_empty() {
                 tx.send(batch)
-                    .map_err(|err| anyhow!("Pipeline: Failed to send feature batch: {}", err))?;
+                    .map_err(|err| anyhow!("Pipeline: Failed to send feature batch: {err}"))?;
             }
 
             Ok(())
@@ -713,8 +708,7 @@ where
                 .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             return Err(anyhow!(
-                "Pipeline: Sink writer thread panicked: {}",
-                panic_msg
+                "Pipeline: Sink writer thread panicked: {panic_msg}"
             ));
         }
     };

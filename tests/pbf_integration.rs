@@ -48,7 +48,7 @@ fn run_cosmo(filters_yaml: &str) -> Vec<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cosmo failed: {}", stderr);
+        panic!("cosmo failed: {stderr}");
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -82,7 +82,7 @@ fn run_cosmo_to_file(filters_yaml: &str, format: &str, output_path: &Path) {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cosmo failed: {}", stderr);
+        panic!("cosmo failed: {stderr}");
     }
 }
 
@@ -469,13 +469,11 @@ table:
         );
         assert!(
             version.is_some() && !version.unwrap().is_null(),
-            "version should be populated for feature with osm_id {:?}",
-            osm_id
+            "version should be populated for feature with osm_id {osm_id:?}"
         );
         assert!(
             timestamp.is_some() && !timestamp.unwrap().is_null(),
-            "timestamp should be populated for feature with osm_id {:?}",
-            osm_id
+            "timestamp should be populated for feature with osm_id {osm_id:?}"
         );
     }
 }
@@ -508,8 +506,7 @@ table:
 
         assert!(
             osm_id.parse::<i64>().is_ok(),
-            "osm_id '{}' should be a valid integer",
-            osm_id
+            "osm_id '{osm_id}' should be a valid integer"
         );
     }
 }
@@ -549,8 +546,7 @@ table:
 
         assert!(
             amenity == "restaurant" || amenity == "cafe",
-            "amenity should be 'restaurant' or 'cafe', got '{}'",
-            amenity
+            "amenity should be 'restaurant' or 'cafe', got '{amenity}'"
         );
     }
 }
@@ -623,8 +619,7 @@ table:
 
         assert!(
             shop == "bakery" || shop == "books" || shop == "florist",
-            "shop should be 'bakery', 'books', or 'florist', got '{}'",
-            shop
+            "shop should be 'bakery', 'books', or 'florist', got '{shop}'"
         );
     }
 }
@@ -989,9 +984,7 @@ table:
 
         assert!(
             valid_categories.contains(&category),
-            "category should be one of {:?}, got '{}'",
-            valid_categories,
-            category
+            "category should be one of {valid_categories:?}, got '{category}'"
         );
     }
 }
@@ -1029,8 +1022,7 @@ tables:
         let geom_type = feature["geometry"]["type"].as_str().unwrap();
         assert!(
             geom_type == "Polygon" || geom_type == "MultiPolygon",
-            "relation geometry should be Polygon or MultiPolygon, got {}",
-            geom_type
+            "relation geometry should be Polygon or MultiPolygon, got {geom_type}"
         );
     }
 }

@@ -41,7 +41,7 @@ impl Parser {
         if tok == expected {
             Ok(())
         } else {
-            Err(format!("Expected {:?}, got {:?}", expected, tok))
+            Err(format!("Expected {expected:?}, got {tok:?}"))
         }
     }
 
@@ -130,7 +130,7 @@ impl Parser {
             }
             Token::Ident(_) => self.parse_tag_expr(),
             Token::Eof => Ok(FilterAst::True),
-            other => Err(format!("Unexpected token: {:?}", other)),
+            other => Err(format!("Unexpected token: {other:?}")),
         }
     }
 
@@ -138,7 +138,7 @@ impl Parser {
     fn parse_tag_expr(&mut self) -> Result<FilterAst, String> {
         let key = match self.advance() {
             Token::Ident(k) => k,
-            other => return Err(format!("Expected identifier, got {:?}", other)),
+            other => return Err(format!("Expected identifier, got {other:?}")),
         };
 
         // Check for comparison operator
@@ -170,7 +170,7 @@ impl Parser {
                                 // For non-equality comparisons, expect a number
                 match self.advance() {
                     Token::Number(n) => Ok(FilterAst::NumericCompare { key, op, value: n }),
-                    other => Err(format!("Expected number after {:?}, got {:?}", op, other)),
+                    other => Err(format!("Expected number after {op:?}, got {other:?}")),
                 }
             }
         }
@@ -220,7 +220,7 @@ impl Parser {
                 }
             }
             Token::Number(n) => Ok(TagValue::Exact(n.to_string())),
-            other => Err(format!("Expected value, got {:?}", other)),
+            other => Err(format!("Expected value, got {other:?}")),
         }
     }
 }

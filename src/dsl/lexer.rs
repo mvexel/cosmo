@@ -172,7 +172,7 @@ impl<'a> Lexer<'a> {
         value
             .parse::<f64>()
             .map(Token::Number)
-            .map_err(|err| format!("Lexer error at '{}': invalid number: {}", value, err))
+            .map_err(|err| format!("Lexer error at '{value}': invalid number: {err}"))
     }
 
     fn lex_ident(&mut self) -> Token {

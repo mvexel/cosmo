@@ -58,8 +58,7 @@ impl FiltersConfig {
 
             if tables.contains_key(table_name) {
                 anyhow::bail!(
-                    "Duplicate table name '{}' in both 'table:' and 'tables:' syntax",
-                    table_name
+                    "Duplicate table name '{table_name}' in both 'table:' and 'tables:' syntax"
                 );
             }
             tables.insert(table_name.clone(), single_table.clone());
@@ -90,13 +89,12 @@ impl FiltersConfig {
         for (table_name, table_config) in raw_tables {
             let filter = match &table_config.filter {
                 FilterInput::Dsl(s) => parse_filter(s).map_err(|e| {
-                    anyhow::anyhow!("Filter error in table '{}': {}", table_name, e)
+                    anyhow::anyhow!("Filter error in table '{table_name}': {e}")
                 })?,
                 FilterInput::EmptyMap(map) if map.is_empty() => FilterAst::True,
                 FilterInput::EmptyMap(_) => {
                     anyhow::bail!(
-                        "Filter error in table '{}': filter must be a string DSL expression or an empty map",
-                        table_name
+                        "Filter error in table '{table_name}': filter must be a string DSL expression or an empty map"
                     );
                 }
             };
@@ -492,7 +490,7 @@ fn parse_column_source(
     }
     if let Some(name) = source.strip_prefix("mapping:") {
         if !mappings.contains_key(name) {
-            return Err(anyhow::anyhow!("Unknown mapping: {}", name));
+            return Err(anyhow::anyhow!("Unknown mapping: {name}"));
         }
         return Ok(ColumnSource::Mapping(name.to_string()));
     }
