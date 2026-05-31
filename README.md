@@ -94,13 +94,13 @@ OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--node-cache-mode <MODE>` | Cache strategy: `auto`, `sparse`, `dense`, `memory` | `auto` |
-| `--node-cache <PATH>` | Custom cache file path (dense mode only) | Temp file (auto-cleanup) |
-| `--node-cache-max-nodes <N>` | Maximum node ID to allocate space for (dense mode) | 16,000,000,000 |
+| `--node-cache <PATH>` | Custom cache file path (dense mode only) | Temp file in `$TMPDIR` if set, otherwise `/var/tmp` |
+| `--node-cache-max-nodes <N>` | Maximum node ID to allocate address space for (dense mode) | 16,000,000,000 |
 
 **Cache Modes:**
 - **auto** - Automatically selects `sparse` for files <5GB or `dense` for files ≥5GB
 - **sparse** - Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. **Requires sorted input** - PBF files from OSM/GeoFabrik are sorted; use `osmium sort` if unsure
-- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent). Creates a sparse file with ~128GB virtual size that only consumes disk space for nodes actually present
+- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent). Creates a sparse file with ~128GB virtual size and checks the target filesystem has enough free space before mapping it; use `--node-cache` to place it on a large disk
 - **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). For planet processing you'd need 384GB+ RAM
 
 **Why these options?** OSM node IDs are globally assigned, so even a small city extract will have IDs scattered across the entire range (10+ billion). For small extracts, sparse mode with binary search is actually faster than dense. For large extracts, dense mode's O(1) lookup wins and uses less disk space. Memory mode is fastest but only practical for smaller extracts or machines with lots of RAM

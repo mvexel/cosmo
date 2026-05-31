@@ -56,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed open-way centroid calculation to use the `LineString` itself rather than an invalid polygon shell.
 - Fixed docs that previously implied open ways could safely be emitted as polygons.
 - Fixed `relation` geometry config defaulting to `true` — now defaults to `false` so existing configs are unaffected.
+- Fixed dense node cache SIGBUS on large inputs when the temporary mmap cache landed on tmpfs-backed `/tmp`: dense temp caches now default to `/var/tmp` unless `TMPDIR` is set, and dense cache creation fails fast when the target filesystem lacks enough free space.
 
 ### Breaking Changes
 

@@ -63,7 +63,7 @@ pub struct ConvertArgs {
     #[arg(long, value_enum, env = "COSMO_NODE_CACHE_MODE")]
     pub node_cache_mode: Option<NodeCacheMode>,
 
-    /// Node cache directory (for dense mode)
+    /// Dense node cache file path
     #[arg(long, env = "COSMO_NODE_CACHE")]
     pub node_cache: Option<PathBuf>,
 
