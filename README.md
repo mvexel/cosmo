@@ -45,7 +45,7 @@ table:
   filter: 'name & (amenity=restaurant|cafe)'
   geometry:
     node: true
-    way: centroid      # Convert building polygons to points
+    way: centroid      # Convert open ways to points
     closed_way: centroid
   columns:
     - name: name

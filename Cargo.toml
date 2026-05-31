@@ -1,15 +1,14 @@
 [package]
 name = "cosmo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.82.0"
+rust-version = "1.88.0"
 
 [dependencies]
 anyhow = "1.0.100"
 arrow-array = "57.1.0"
 arrow-schema = "57.1.0"
 clap = { version = "4.5.53", features = ["derive", "env"] }
-config = { version = "0.15.19", features = ["yaml"] }
 crossbeam-channel = "0.5.15"
 geo = "0.32.0"
 geo-types = "0.7.18"
@@ -27,6 +26,5 @@ tempfile = "3.20"
 time = { version = "0.3.37", features = ["formatting"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-winnow = "0.7"
 cel = "0.11"
 proj = "0.31.0"

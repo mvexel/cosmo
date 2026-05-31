@@ -173,7 +173,7 @@ pub fn summarize_filters_compiled(config: &CompiledConfig) -> String {
     for table in config.tables.values() {
         total_cols += table.columns.len();
         has_node |= table.geometry.node;
-        has_way |= table.geometry.way.enabled();
+        has_way |= table.geometry.processes_ways();
         has_rel |= table.geometry.relation;
     }
 
@@ -368,7 +368,7 @@ pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
     config
         .tables
         .values()
-        .any(|table| table.geometry.way.enabled() || table.geometry.relation)
+        .any(|table| table.geometry.processes_ways() || table.geometry.relation)
 }
 
 pub fn pass1_index_nodes(

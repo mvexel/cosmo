@@ -98,7 +98,7 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
             table_name,
             table.columns.len(),
             table.geometry.node,
-            table.geometry.way.enabled(),
+            table.geometry.processes_ways(),
             table.geometry.relation
         );
     }
@@ -170,7 +170,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
             table_name,
             table.columns.len(),
             table.geometry.node,
-            table.geometry.way.enabled(),
+            table.geometry.processes_ways(),
             table.geometry.relation
         );
     }

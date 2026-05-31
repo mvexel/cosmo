@@ -115,9 +115,7 @@ fn extracts_tree_nodes() {
     let filters = r#"
 table:
   name: trees
-  filter:
-    tag: "natural"
-    value: "tree"
+  filter: 'natural=tree'
   geometry:
     node: true
     way: false
@@ -136,8 +134,7 @@ fn extracts_lanes_tagged_ways() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -156,8 +153,7 @@ fn writes_parquet_output() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -187,8 +183,7 @@ fn mmap_cache_errors_on_small_size() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -321,6 +316,44 @@ table:
     assert!(
         non_polygon_features.is_empty(),
         "closed_way: polygon should produce only Polygons, but found {} non-Polygon features",
+        non_polygon_features.len()
+    );
+}
+
+#[test]
+fn closed_way_polygon_with_open_ways_disabled_still_outputs_polygons() {
+    // Regression for issue #1: `way: false` combined with `closed_way: polygon`
+    // must still emit closed-way polygons instead of an empty file.
+    let filters = r#"
+table:
+  name: buildings
+  filter: 'building'
+  geometry:
+    node: false
+    way: false
+    closed_way: polygon
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+
+    assert!(
+        !features.is_empty(),
+        "way: false with closed_way: polygon should still extract closed-way polygons"
+    );
+
+    let non_polygon_features: Vec<_> = features
+        .iter()
+        .filter(|f| geometry_type(f) != "Polygon")
+        .collect();
+
+    assert!(
+        non_polygon_features.is_empty(),
+        "all emitted features should be Polygons, found {} non-Polygon",
         non_polygon_features.len()
     );
 }
@@ -771,9 +804,7 @@ fn geojson_output_is_valid_feature_collection() {
     let filters = r#"
 table:
   name: trees
-  filter:
-    tag: "natural"
-    value: "tree"
+  filter: 'natural=tree'
   geometry:
     node: true
     way: false
@@ -879,7 +910,9 @@ table:
 
 #[test]
 fn nodes_only_mode_skips_ways() {
-    // When way: false, we should only get nodes even if ways match the filter
+    // When both way and closed_way are disabled, we should only get nodes even
+    // if ways match the filter. (closed_way: false is required because
+    // closed_way governs closed ways independently of the open-way setting.)
     let filters = r#"
 table:
   name: amenities
@@ -887,6 +920,7 @@ table:
   geometry:
     node: true
     way: false
+    closed_way: false
     relation: false
   columns:
     - name: osm_id
@@ -903,7 +937,7 @@ table:
         assert_eq!(
             geometry_type(feature),
             "Point",
-            "with way: false, all features should be Points"
+            "with way: false and closed_way: false, all features should be Points"
         );
     }
 }

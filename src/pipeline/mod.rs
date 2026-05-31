@@ -201,9 +201,12 @@ pub fn build_way_geometry(
     geometry_cfg: &crate::config::GeometryConfig,
     line_string: LineString<f64>,
     coords: &[(f64, f64)],
-) -> Geometry<f64> {
+) -> Option<Geometry<f64>> {
     if line_string.is_closed() {
-        return match geometry_cfg.closed_way {
+        if !geometry_cfg.closed_way.enabled() {
+            return None;
+        }
+        return Some(match geometry_cfg.closed_way.mode() {
             ClosedWayMode::Polygon => Geometry::Polygon(Polygon::new(line_string, vec![])),
             ClosedWayMode::Centroid => {
                 let polygon = Polygon::new(line_string, vec![]);
@@ -213,20 +216,22 @@ pub fn build_way_geometry(
                 Geometry::Point(centroid)
             }
             ClosedWayMode::Linestring => Geometry::LineString(line_string),
-        };
+        });
     }
 
-    match geometry_cfg.way.mode() {
+    if !geometry_cfg.way.enabled() {
+        return None;
+    }
+
+    Some(match geometry_cfg.way.mode() {
         WayGeometryMode::Linestring => Geometry::LineString(line_string),
-        WayGeometryMode::Polygon => Geometry::Polygon(Polygon::new(line_string, vec![])),
         WayGeometryMode::Centroid => {
-            let polygon = Polygon::new(line_string, vec![]);
-            let centroid = polygon
+            let centroid = line_string
                 .centroid()
                 .unwrap_or_else(|| Point::new(coords[0].0, coords[0].1));
             Geometry::Point(centroid)
         }
-    }
+    })
 }
 
 pub fn process_block_collect(
@@ -289,7 +294,7 @@ pub fn process_block_collect(
                 let tag_map = build_tag_map(way.tags());
 
                 for (table_name, table) in &config.tables {
-                    if table.geometry.way.enabled() && evaluate_filter(&table.filter, &tag_map) {
+                    if table.geometry.processes_ways() && evaluate_filter(&table.filter, &tag_map) {
                         let refs: Vec<i64> = way.refs().collect();
                         let coords: Vec<(f64, f64)> = refs
                             .iter()
@@ -298,19 +303,21 @@ pub fn process_block_collect(
 
                         if coords.len() >= 2 {
                             let line_string = LineString::from(coords.clone());
-                            let geometry =
-                                build_way_geometry(&table.geometry, line_string, &coords);
-                            if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                                let row = build_feature_row(
-                                    geometry,
-                                    &tag_map,
-                                    &table.columns,
-                                    runtime,
-                                    Some(build_metadata_from_info(way.id(), &way.info())),
-                                    Some(refs),
-                                    config,
-                                );
-                                rows.push((table_name.clone(), row));
+                            if let Some(geometry) =
+                                build_way_geometry(&table.geometry, line_string, &coords)
+                            {
+                                if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                                    let row = build_feature_row(
+                                        geometry,
+                                        &tag_map,
+                                        &table.columns,
+                                        runtime,
+                                        Some(build_metadata_from_info(way.id(), &way.info())),
+                                        Some(refs),
+                                        config,
+                                    );
+                                    rows.push((table_name.clone(), row));
+                                }
                             }
                         }
                     }
@@ -396,14 +403,69 @@ mod tests {
     fn closed_way_can_be_linestring() {
         let geometry_cfg = crate::config::GeometryConfig {
             way: crate::config::WaySetting::Enabled(WayGeometryMode::Linestring),
-            closed_way: ClosedWayMode::Linestring,
+            closed_way: crate::config::ClosedWaySetting::Enabled(ClosedWayMode::Linestring),
             node: true,
             relation: false,
         };
         let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
         let line_string = LineString::from(coords.clone());
         let geometry = build_way_geometry(&geometry_cfg, line_string, &coords);
-        assert!(matches!(geometry, Geometry::LineString(_)));
+        assert!(matches!(geometry, Some(Geometry::LineString(_))));
+    }
+
+    #[test]
+    fn closed_way_polygon_with_disabled_open_way_emits_polygon() {
+        // Regression for issue #1: way: false must not suppress closed-way polygons.
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Disabled,
+            closed_way: crate::config::ClosedWaySetting::Enabled(ClosedWayMode::Polygon),
+            node: false,
+            relation: false,
+        };
+        let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let closed = LineString::from(coords.clone());
+        assert!(matches!(
+            build_way_geometry(&geometry_cfg, closed, &coords),
+            Some(Geometry::Polygon(_))
+        ));
+
+        // Open way is still dropped because way is disabled.
+        let open_coords = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)];
+        let open = LineString::from(open_coords.clone());
+        assert!(build_way_geometry(&geometry_cfg, open, &open_coords).is_none());
+    }
+
+    #[test]
+    fn disabled_closed_way_drops_closed_ways() {
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Enabled(WayGeometryMode::Linestring),
+            closed_way: crate::config::ClosedWaySetting::Disabled,
+            node: false,
+            relation: false,
+        };
+        let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let closed = LineString::from(coords.clone());
+        assert!(build_way_geometry(&geometry_cfg, closed, &coords).is_none());
+    }
+
+    #[test]
+    fn open_way_centroid_uses_line_centroid() {
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Enabled(WayGeometryMode::Centroid),
+            closed_way: crate::config::ClosedWaySetting::Disabled,
+            node: false,
+            relation: false,
+        };
+        let coords = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
+        let open = LineString::from(coords.clone());
+
+        let geometry = build_way_geometry(&geometry_cfg, open, &coords);
+        let Some(Geometry::Point(point)) = geometry else {
+            panic!("expected open way centroid point");
+        };
+
+        assert!((point.x() - 1.5).abs() < f64::EPSILON);
+        assert!((point.y() - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]

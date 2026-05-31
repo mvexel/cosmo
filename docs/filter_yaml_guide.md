@@ -703,8 +703,8 @@ Control how OSM elements are converted to geometries. Each element type (nodes, 
 table:
   geometry:
     node: true|false
-    way: linestring|polygon|centroid|false
-    closed_way: polygon|linestring|centroid
+    way: linestring|centroid|false
+    closed_way: polygon|linestring|centroid|false
     relation: true|false
 ```
 
@@ -727,12 +727,16 @@ Open ways (where first and last nodes are different):
 geometry:
   way: linestring  # Default: linear features (roads, rivers, walls)
   # or
-  way: polygon     # Treat as polygon (rare for open ways)
-  # or
-  way: centroid    # Convert to point at the centroid
+  way: centroid    # Convert open ways to point centroids
   # or
   way: false       # Exclude open ways
 ```
+
+`way` controls **open ways only**. It is independent of `closed_way`: setting
+`way: false` excludes open ways but leaves closed ways governed by `closed_way`.
+
+For open ways, `way: centroid` computes the centroid of the line geometry. It
+does not turn the open way into an area.
 
 ### Closed Way Geometry
 
@@ -745,7 +749,13 @@ geometry:
   closed_way: linestring  # Keep as linear (e.g., circular roads)
   # or
   closed_way: centroid    # Convert to point (e.g., building centroids)
+  # or
+  closed_way: false       # Exclude closed ways
 ```
+
+To emit closed-way polygons while dropping open ways, set `way: false` and
+`closed_way: polygon`. To exclude all ways (e.g. a node-only extract), set both
+`way: false` and `closed_way: false`.
 
 ### Relation Geometry
 
@@ -785,9 +795,9 @@ geometry:
 ```yaml
 geometry:
   node: false
-  way: polygon
-  closed_way: polygon
-  relation: true # Multipolygon relations
+  way: false          # Open ways cannot form valid polygons
+  closed_way: polygon # Closed ways become polygons
+  relation: true      # Multipolygon relations
 ```
 
 #### Mixed (Transportation Network)
@@ -909,7 +919,7 @@ table:
   filter: "building"
   geometry:
     node: false
-    way: polygon
+    way: false
     closed_way: polygon
     relation: true
   columns:
