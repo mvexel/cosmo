@@ -1,4 +1,4 @@
-# Architecture Improvements — Work Log
+# 0.2.0 — Work Log
 
 ## Branches
 
@@ -20,6 +20,7 @@
 | D7 | Multipolygon + boundary relations | Both use identical ring assembly. Route relations excluded (need MultiLineString). | **ADR-001** |
 | D8 | Fix `relation` serde default to `false` | Caught by integration test. Existing configs must not suddenly process relations. | No |
 | D9 | 3-pass when relations enabled | Pass 0 scans relations for way IDs. Pass 1 collects only those ways. No extra cost when relations disabled. | **ADR-001** |
+| D10 | MapRoulette as a new output format, not a flag on GeoJSONL | Semantics differ: RS prefix + FeatureCollection wrapper per line (RFC 7464). Separate sink is cleaner than conditional logic in GeoJSONL. | No |
 
 ## Commit Log
 
@@ -44,3 +45,9 @@
 | Commit | Description |
 |--------|-------------|
 | `81f1e87` | 3-pass architecture for planet-scale relations |
+| `dcc84af` | Docs update for relation support |
+| `c0b385f` | MapRoulette output format (RFC 7464 line-by-line GeoJSON) |
+
+### Merge
+
+All branches merged into `0.2.0` on 2026-05-31.
