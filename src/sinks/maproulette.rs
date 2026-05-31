@@ -88,17 +88,13 @@ mod tests {
 
     fn point_row(name: &str, lon: f64, lat: f64) -> FeatureRow {
         let mut columns = HashMap::new();
-        columns.insert(
-            "name".to_string(),
-            ColumnValue::String(name.to_string()),
-        );
+        columns.insert("name".to_string(), ColumnValue::String(name.to_string()));
         FeatureRow {
             geometry: Geometry::Point(Point::new(lon, lat)),
             columns,
             extras: Map::new(),
         }
     }
-
 
     #[test]
     fn each_line_starts_with_rs() {
@@ -143,10 +139,7 @@ mod tests {
         assert_eq!(parsed["type"], "FeatureCollection");
         assert_eq!(parsed["features"].as_array().unwrap().len(), 1);
         assert_eq!(parsed["features"][0]["type"], "Feature");
-        assert_eq!(
-            parsed["features"][0]["properties"]["name"],
-            "Museum"
-        );
+        assert_eq!(parsed["features"][0]["properties"]["name"], "Museum");
     }
 
     #[test]

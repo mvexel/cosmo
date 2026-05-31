@@ -192,6 +192,10 @@ Columnar format with spatial metadata. Efficient for large datasets and analytic
 
 **Note:** Output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
 
+### MapRoulette
+
+MapRoulette is a platform for creating and managing OSM mapping tasks. Cosmo can output [MapRoulette-compatible](https://learn.maproulette.org/en-US/documentation/line-by-line-geojson/) GeoJSONL files that can be uploaded to MapRoulette as tasks when you create a new challenge.
+
 ## Documentation
 
 - **[Filter YAML Guide](docs/filter_yaml_guide.md)** - Complete reference for filter syntax, mappings, CEL expressions, and examples

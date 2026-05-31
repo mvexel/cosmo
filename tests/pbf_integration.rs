@@ -1052,7 +1052,11 @@ tables:
         source: "tag:name"
 "#;
     let lines = run_cosmo(yaml);
-    assert_eq!(lines.len(), 1, "should match exactly one apartments relation");
+    assert_eq!(
+        lines.len(),
+        1,
+        "should match exactly one apartments relation"
+    );
 
     let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
     let geom = &feature["geometry"];

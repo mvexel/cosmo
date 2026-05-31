@@ -7,8 +7,8 @@ use geo_types::{Geometry, LineString, MultiPolygon, Point, Polygon, Rect};
 use osmpbf::{Element, PrimitiveBlock, RelMemberType};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::config::{
     ClosedWayMode, ColumnSource, CompiledColumn, CompiledConfig, RuntimeConfig, WayGeometryMode,
@@ -353,8 +353,7 @@ fn build_relation_geometry(
                 for poly in &mut result_polygons {
                     if poly.contains(&pt) {
                         // Reconstruct with this hole added
-                        let mut holes: Vec<LineString<f64>> =
-                            poly.interiors().to_vec();
+                        let mut holes: Vec<LineString<f64>> = poly.interiors().to_vec();
                         holes.push(ls.clone());
                         *poly = Polygon::new(poly.exterior().clone(), holes);
                         assigned = true;
@@ -534,7 +533,9 @@ pub fn process_block_collect(
                             if count < 5 {
                                 tracing::warn!(
                                     "Way {} has {}/{} missing node references",
-                                    way.id(), missing, ref_count
+                                    way.id(),
+                                    missing,
+                                    ref_count
                                 );
                             } else if count == 5 {
                                 tracing::warn!(
@@ -577,8 +578,7 @@ pub fn process_block_collect(
 
                 for (table_name, table) in &config.tables {
                     if table.geometry.relation && evaluate_filter(&table.filter, &tag_map) {
-                        if let Some(geometry) =
-                            build_relation_geometry(&rel, node_store, way_store)
+                        if let Some(geometry) = build_relation_geometry(&rel, node_store, way_store)
                         {
                             if geometry_intersects_bbox(&geometry, runtime.bbox) {
                                 let member_ids: Vec<i64> =
@@ -708,10 +708,7 @@ mod tests {
         let Geometry::Polygon(poly) = geometry else {
             panic!("expected polygon");
         };
-        assert!(
-            poly.exterior().is_ccw(),
-            "polygon exterior must remain CCW"
-        );
+        assert!(poly.exterior().is_ccw(), "polygon exterior must remain CCW");
     }
 
     #[test]
@@ -853,13 +850,8 @@ mod tests {
             node: false,
             relation: false,
         };
-        let coords: Vec<(f64, f64)> = vec![
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (1.0, 1.0),
-            (0.0, 1.0),
-            (0.0, 0.0),
-        ];
+        let coords: Vec<(f64, f64)> =
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
         let first_coord = coords[0];
         let line_string = LineString::from(coords);
         let geometry = build_way_geometry(&geometry_cfg, line_string, first_coord);
