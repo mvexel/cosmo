@@ -200,7 +200,7 @@ pub fn build_feature_row(
 pub fn build_way_geometry(
     geometry_cfg: &crate::config::GeometryConfig,
     line_string: LineString<f64>,
-    coords: &[(f64, f64)],
+    first_coord: (f64, f64),
 ) -> Option<Geometry<f64>> {
     if line_string.is_closed() {
         if !geometry_cfg.closed_way.enabled() {
@@ -212,7 +212,7 @@ pub fn build_way_geometry(
                 let polygon = Polygon::new(line_string, vec![]);
                 let centroid = polygon
                     .centroid()
-                    .unwrap_or_else(|| Point::new(coords[0].0, coords[0].1));
+                    .unwrap_or_else(|| Point::new(first_coord.0, first_coord.1));
                 Geometry::Point(centroid)
             }
             ClosedWayMode::Linestring => Geometry::LineString(line_string),
@@ -228,7 +228,7 @@ pub fn build_way_geometry(
         WayGeometryMode::Centroid => {
             let centroid = line_string
                 .centroid()
-                .unwrap_or_else(|| Point::new(coords[0].0, coords[0].1));
+                .unwrap_or_else(|| Point::new(first_coord.0, first_coord.1));
             Geometry::Point(centroid)
         }
     })
@@ -302,9 +302,10 @@ pub fn process_block_collect(
                             .collect();
 
                         if coords.len() >= 2 {
-                            let line_string = LineString::from(coords.clone());
+                            let first_coord = coords[0];
+                            let line_string = LineString::from(coords);
                             if let Some(geometry) =
-                                build_way_geometry(&table.geometry, line_string, &coords)
+                                build_way_geometry(&table.geometry, line_string, first_coord)
                             {
                                 if geometry_intersects_bbox(&geometry, runtime.bbox) {
                                     let row = build_feature_row(
@@ -407,9 +408,10 @@ mod tests {
             node: true,
             relation: false,
         };
-        let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
-        let line_string = LineString::from(coords.clone());
-        let geometry = build_way_geometry(&geometry_cfg, line_string, &coords);
+        let coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let first_coord = coords[0];
+        let line_string = LineString::from(coords);
+        let geometry = build_way_geometry(&geometry_cfg, line_string, first_coord);
         assert!(matches!(geometry, Some(Geometry::LineString(_))));
     }
 
@@ -422,17 +424,18 @@ mod tests {
             node: false,
             relation: false,
         };
-        let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
         let closed = LineString::from(coords.clone());
         assert!(matches!(
-            build_way_geometry(&geometry_cfg, closed, &coords),
+            build_way_geometry(&geometry_cfg, closed, coords[0]),
             Some(Geometry::Polygon(_))
         ));
 
         // Open way is still dropped because way is disabled.
-        let open_coords = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)];
-        let open = LineString::from(open_coords.clone());
-        assert!(build_way_geometry(&geometry_cfg, open, &open_coords).is_none());
+        let open_coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)];
+        let first_open = open_coords[0];
+        let open = LineString::from(open_coords);
+        assert!(build_way_geometry(&geometry_cfg, open, first_open).is_none());
     }
 
     #[test]
@@ -443,9 +446,9 @@ mod tests {
             node: false,
             relation: false,
         };
-        let coords = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
         let closed = LineString::from(coords.clone());
-        assert!(build_way_geometry(&geometry_cfg, closed, &coords).is_none());
+        assert!(build_way_geometry(&geometry_cfg, closed, coords[0]).is_none());
     }
 
     #[test]
@@ -456,10 +459,11 @@ mod tests {
             node: false,
             relation: false,
         };
-        let coords = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
-        let open = LineString::from(coords.clone());
+        let coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
+        let first_coord = coords[0];
+        let open = LineString::from(coords);
 
-        let geometry = build_way_geometry(&geometry_cfg, open, &coords);
+        let geometry = build_way_geometry(&geometry_cfg, open, first_coord);
         let Some(Geometry::Point(point)) = geometry else {
             panic!("expected open way centroid point");
         };
