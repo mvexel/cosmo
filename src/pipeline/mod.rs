@@ -592,4 +592,221 @@ mod tests {
             Some(ColumnValue::String(value)) if value == "2024-01-01T00:00:00Z"
         ));
     }
+
+    #[test]
+    fn build_way_geometry_returns_none_for_two_point_open_way_when_disabled() {
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Disabled,
+            closed_way: crate::config::ClosedWaySetting::Disabled,
+            node: false,
+            relation: false,
+        };
+        let coords: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 1.0)];
+        let first_coord = coords[0];
+        let line_string = LineString::from(coords);
+        assert!(build_way_geometry(&geometry_cfg, line_string, first_coord).is_none());
+    }
+
+    #[test]
+    fn closed_way_centroid_produces_point() {
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Disabled,
+            closed_way: crate::config::ClosedWaySetting::Enabled(ClosedWayMode::Centroid),
+            node: false,
+            relation: false,
+        };
+        let coords: Vec<(f64, f64)> = vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ];
+        let first_coord = coords[0];
+        let line_string = LineString::from(coords);
+        let geometry = build_way_geometry(&geometry_cfg, line_string, first_coord);
+        let Some(Geometry::Point(point)) = geometry else {
+            panic!("expected Point geometry from closed way centroid");
+        };
+        assert!((point.x() - 0.5).abs() < f64::EPSILON);
+        assert!((point.y() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn tag_column_with_integer_type_produces_typed_value() {
+        let columns = vec![CompiledColumn {
+            name: "lanes".to_string(),
+            source: ColumnSource::Tag("lanes".to_string()),
+            col_type: ColumnType::Integer,
+        }];
+        let mut tags = HashMap::new();
+        tags.insert("lanes".to_string(), "4".to_string());
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+        );
+        let config = CompiledConfig {
+            tables,
+            mappings: HashMap::new(),
+        };
+        let row = build_feature_row(
+            Geometry::Point(Point::new(0.0, 0.0)),
+            &tags,
+            &columns,
+            &RuntimeConfig::default(),
+            None,
+            None,
+            &config,
+        );
+        assert!(matches!(
+            row.columns.get("lanes"),
+            Some(ColumnValue::Integer(4))
+        ));
+    }
+
+    #[test]
+    fn tag_column_with_float_type_produces_typed_value() {
+        let columns = vec![CompiledColumn {
+            name: "height".to_string(),
+            source: ColumnSource::Tag("height".to_string()),
+            col_type: ColumnType::Float,
+        }];
+        let mut tags = HashMap::new();
+        tags.insert("height".to_string(), "12.5".to_string());
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+        );
+        let config = CompiledConfig {
+            tables,
+            mappings: HashMap::new(),
+        };
+        let row = build_feature_row(
+            Geometry::Point(Point::new(0.0, 0.0)),
+            &tags,
+            &columns,
+            &RuntimeConfig::default(),
+            None,
+            None,
+            &config,
+        );
+        assert!(matches!(
+            row.columns.get("height"),
+            Some(ColumnValue::Float(v)) if (*v - 12.5).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn tag_column_with_integer_type_falls_back_to_string_on_parse_failure() {
+        let columns = vec![CompiledColumn {
+            name: "lanes".to_string(),
+            source: ColumnSource::Tag("lanes".to_string()),
+            col_type: ColumnType::Integer,
+        }];
+        let mut tags = HashMap::new();
+        tags.insert("lanes".to_string(), "two".to_string());
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+        );
+        let config = CompiledConfig {
+            tables,
+            mappings: HashMap::new(),
+        };
+        let row = build_feature_row(
+            Geometry::Point(Point::new(0.0, 0.0)),
+            &tags,
+            &columns,
+            &RuntimeConfig::default(),
+            None,
+            None,
+            &config,
+        );
+        assert!(matches!(
+            row.columns.get("lanes"),
+            Some(ColumnValue::String(v)) if v == "two"
+        ));
+    }
+
+    #[test]
+    fn tag_column_with_missing_tag_produces_no_value() {
+        let columns = vec![CompiledColumn {
+            name: "lanes".to_string(),
+            source: ColumnSource::Tag("lanes".to_string()),
+            col_type: ColumnType::Integer,
+        }];
+        let tags: HashMap<String, String> = HashMap::new();
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+        );
+        let config = CompiledConfig {
+            tables,
+            mappings: HashMap::new(),
+        };
+        let row = build_feature_row(
+            Geometry::Point(Point::new(0.0, 0.0)),
+            &tags,
+            &columns,
+            &RuntimeConfig::default(),
+            None,
+            None,
+            &config,
+        );
+        assert!(row.columns.get("lanes").is_none());
+    }
+
+    #[test]
+    fn bbox_none_passes_everything() {
+        let geom = Geometry::Point(Point::new(5.0, 5.0));
+        assert!(geometry_intersects_bbox(&geom, None));
+    }
+
+    #[test]
+    fn point_inside_bbox_passes() {
+        let geom = Geometry::Point(Point::new(1.0, 1.0));
+        assert!(geometry_intersects_bbox(&geom, Some([0.0, 0.0, 2.0, 2.0])));
+    }
+
+    #[test]
+    fn point_outside_bbox_fails() {
+        let geom = Geometry::Point(Point::new(5.0, 5.0));
+        assert!(!geometry_intersects_bbox(&geom, Some([0.0, 0.0, 2.0, 2.0])));
+    }
+
+    #[test]
+    fn linestring_crossing_bbox_passes() {
+        let geom = Geometry::LineString(LineString::from(vec![(-1.0, 1.0), (3.0, 1.0)]));
+        assert!(geometry_intersects_bbox(&geom, Some([0.0, 0.0, 2.0, 2.0])));
+    }
+
+    #[test]
+    fn linestring_outside_bbox_fails() {
+        let geom = Geometry::LineString(LineString::from(vec![(5.0, 5.0), (6.0, 6.0)]));
+        assert!(!geometry_intersects_bbox(&geom, Some([0.0, 0.0, 2.0, 2.0])));
+    }
 }
