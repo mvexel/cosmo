@@ -3,8 +3,8 @@ use geo::algorithm::bounding_rect::BoundingRect;
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::intersects::Intersects;
 use geo::algorithm::winding_order::Winding;
-use geo_types::{Geometry, LineString, Point, Polygon, Rect};
-use osmpbf::{Element, PrimitiveBlock};
+use geo_types::{Geometry, LineString, MultiPolygon, Point, Polygon, Rect};
+use osmpbf::{Element, PrimitiveBlock, RelMemberType};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +22,9 @@ use crate::metadata::{
 use crate::sinks::{ColumnType, ColumnValue, FeatureRow};
 use crate::storage::NodeStoreReader;
 use crate::utils::build_tag_map;
+
+/// In-memory store mapping way ID → node ref IDs, used for relation assembly.
+pub type WayStore = HashMap<i64, Vec<i64>>;
 
 /// Check if a geometry intersects with a bounding box.
 /// Returns true if no bbox is set (no filtering), or if the geometry intersects the bbox.
@@ -69,11 +72,18 @@ pub struct StandardProcessor {
     pub config: Arc<CompiledConfig>,
     pub runtime: Arc<RuntimeConfig>,
     pub node_store: Arc<NodeStoreReader>,
+    pub way_store: Arc<WayStore>,
 }
 
 impl BlockProcessor for StandardProcessor {
     fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<(String, FeatureRow)>> {
-        process_block_collect(block, &self.config, &self.runtime, &self.node_store)
+        process_block_collect(
+            block,
+            &self.config,
+            &self.runtime,
+            &self.node_store,
+            &self.way_store,
+        )
     }
 }
 
@@ -250,11 +260,210 @@ pub fn build_way_geometry(
     })
 }
 
+/// Assemble a multipolygon geometry from an OSM relation.
+///
+/// Collects outer and inner member ways, resolves their node references to
+/// coordinates, joins way segments end-to-end into closed rings, and produces
+/// a Polygon or MultiPolygon.
+fn build_relation_geometry(
+    rel: &osmpbf::Relation<'_>,
+    node_store: &NodeStoreReader,
+    way_store: &WayStore,
+) -> Option<Geometry<f64>> {
+    let mut outer_segments: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut inner_segments: Vec<Vec<(f64, f64)>> = Vec::new();
+
+    for member in rel.members() {
+        if member.member_type != RelMemberType::Way {
+            continue;
+        }
+        let role = member.role().unwrap_or("");
+        let target = match role {
+            "outer" | "" => &mut outer_segments, // empty role defaults to outer
+            "inner" => &mut inner_segments,
+            _ => continue,
+        };
+
+        if let Some(node_refs) = way_store.get(&member.member_id) {
+            let coords: Vec<(f64, f64)> = node_refs
+                .iter()
+                .filter_map(|&id| node_store.get(id as u64))
+                .collect();
+            if coords.len() >= 2 {
+                target.push(coords);
+            }
+        }
+    }
+
+    if outer_segments.is_empty() {
+        return None;
+    }
+
+    let outer_rings = assemble_rings(outer_segments);
+    if outer_rings.is_empty() {
+        return None;
+    }
+
+    let inner_rings = assemble_rings(inner_segments);
+
+    if outer_rings.len() == 1 {
+        let mut exterior = LineString::from(outer_rings.into_iter().next().unwrap());
+        exterior.make_ccw_winding();
+        let holes: Vec<LineString<f64>> = inner_rings
+            .into_iter()
+            .map(|ring| {
+                let mut ls = LineString::from(ring);
+                // Inner rings should be CW (opposite of exterior)
+                ls.make_cw_winding();
+                ls
+            })
+            .collect();
+        Some(Geometry::Polygon(Polygon::new(exterior, holes)))
+    } else {
+        // Multiple outer rings → MultiPolygon
+        // Simple assignment: all inner rings go to the first polygon that contains them.
+        // For most real-world data this is correct.
+        let polygons: Vec<Polygon<f64>> = outer_rings
+            .into_iter()
+            .map(|ring| {
+                let mut exterior = LineString::from(ring);
+                exterior.make_ccw_winding();
+                Polygon::new(exterior, vec![])
+            })
+            .collect();
+
+        let mut result_polygons: Vec<Polygon<f64>> = Vec::with_capacity(polygons.len());
+        let mut unassigned_holes: Vec<LineString<f64>> = Vec::new();
+
+        // First pass: create polygons without holes
+        for poly in &polygons {
+            result_polygons.push(poly.clone());
+        }
+
+        // Second pass: assign inner rings to containing polygons
+        for ring in inner_rings {
+            let mut ls = LineString::from(ring);
+            ls.make_cw_winding();
+
+            // Find the polygon that contains the first point of this hole
+            let test_point = ls.0.first().map(|c| Point::new(c.x, c.y));
+            let mut assigned = false;
+            if let Some(pt) = test_point {
+                use geo::algorithm::contains::Contains;
+                for poly in &mut result_polygons {
+                    if poly.contains(&pt) {
+                        // Reconstruct with this hole added
+                        let mut holes: Vec<LineString<f64>> =
+                            poly.interiors().to_vec();
+                        holes.push(ls.clone());
+                        *poly = Polygon::new(poly.exterior().clone(), holes);
+                        assigned = true;
+                        break;
+                    }
+                }
+            }
+            if !assigned {
+                unassigned_holes.push(ls);
+            }
+        }
+
+        if !unassigned_holes.is_empty() {
+            tracing::debug!(
+                "Relation {}: {} inner ring(s) could not be assigned to any outer ring",
+                rel.id(),
+                unassigned_holes.len()
+            );
+        }
+
+        Some(Geometry::MultiPolygon(MultiPolygon::new(result_polygons)))
+    }
+}
+
+/// Join coordinate segments end-to-end into closed rings.
+///
+/// OSM multipolygon rings are often split across multiple ways that share
+/// endpoints. This function greedily joins segments by matching the last
+/// coordinate of the current chain to the first or last coordinate of an
+/// unused segment, building closed rings.
+fn assemble_rings(segments: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
+    if segments.is_empty() {
+        return vec![];
+    }
+
+    let mut unused: Vec<Option<Vec<(f64, f64)>>> = segments.into_iter().map(Some).collect();
+    let mut rings: Vec<Vec<(f64, f64)>> = Vec::new();
+
+    loop {
+        // Find next unused segment to start a chain
+        let start_idx = unused.iter().position(|s| s.is_some());
+        let Some(start_idx) = start_idx else {
+            break;
+        };
+        let mut chain = unused[start_idx].take().unwrap();
+
+        // Try to extend the chain by joining segments
+        loop {
+            let tail = *chain.last().unwrap();
+            let head = chain[0];
+
+            // Check if ring is already closed
+            if chain.len() >= 4 && (tail.0 - head.0).abs() < 1e-9 && (tail.1 - head.1).abs() < 1e-9
+            {
+                break;
+            }
+
+            // Find a segment whose start or end matches our tail
+            let mut found = false;
+            for slot in unused.iter_mut() {
+                if let Some(seg) = slot {
+                    let seg_head = seg[0];
+                    let seg_tail = *seg.last().unwrap();
+
+                    if (tail.0 - seg_head.0).abs() < 1e-9 && (tail.1 - seg_head.1).abs() < 1e-9 {
+                        // tail matches seg start → append seg (skip first coord, it's the join point)
+                        let mut seg = slot.take().unwrap();
+                        chain.extend(seg.drain(1..));
+                        found = true;
+                        break;
+                    } else if (tail.0 - seg_tail.0).abs() < 1e-9
+                        && (tail.1 - seg_tail.1).abs() < 1e-9
+                    {
+                        // tail matches seg end → append reversed seg
+                        let mut seg = slot.take().unwrap();
+                        seg.reverse();
+                        chain.extend(seg.drain(1..));
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if !found {
+                // Can't extend further — ring may be incomplete
+                break;
+            }
+        }
+
+        if chain.len() >= 4 {
+            // Close ring if not already closed
+            let head = chain[0];
+            let tail = *chain.last().unwrap();
+            if (tail.0 - head.0).abs() >= 1e-9 || (tail.1 - head.1).abs() >= 1e-9 {
+                chain.push(head);
+            }
+            rings.push(chain);
+        }
+    }
+
+    rings
+}
+
 pub fn process_block_collect(
     block: PrimitiveBlock,
     config: &CompiledConfig,
     runtime: &RuntimeConfig,
     node_store: &NodeStoreReader,
+    way_store: &WayStore,
 ) -> Result<Vec<(String, FeatureRow)>> {
     let mut rows = Vec::new();
 
@@ -357,8 +566,37 @@ pub fn process_block_collect(
                     }
                 }
             }
-            Element::Relation(_) => {
-                // TODO: Relation support
+            Element::Relation(rel) => {
+                let tag_map = build_tag_map(rel.tags());
+
+                // Only process type=multipolygon relations
+                let is_multipolygon = tag_map.get("type").is_some_and(|v| v == "multipolygon");
+                if !is_multipolygon {
+                    continue;
+                }
+
+                for (table_name, table) in &config.tables {
+                    if table.geometry.relation && evaluate_filter(&table.filter, &tag_map) {
+                        if let Some(geometry) =
+                            build_relation_geometry(&rel, node_store, way_store)
+                        {
+                            if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                                let member_ids: Vec<i64> =
+                                    rel.members().map(|m| m.member_id).collect();
+                                let row = build_feature_row(
+                                    geometry,
+                                    &tag_map,
+                                    &table.columns,
+                                    runtime,
+                                    Some(build_metadata_from_info(rel.id(), &rel.info())),
+                                    Some(member_ids),
+                                    config,
+                                );
+                                rows.push((table_name.clone(), row));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -808,5 +1046,58 @@ mod tests {
     fn linestring_outside_bbox_fails() {
         let geom = Geometry::LineString(LineString::from(vec![(5.0, 5.0), (6.0, 6.0)]));
         assert!(!geometry_intersects_bbox(&geom, Some([0.0, 0.0, 2.0, 2.0])));
+    }
+
+    #[test]
+    fn assemble_rings_single_closed_segment() {
+        let segments = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]];
+        let rings = assemble_rings(segments);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].first(), rings[0].last());
+    }
+
+    #[test]
+    fn assemble_rings_two_segments_forward() {
+        // Two segments that join end-to-start: A→B, B→C→A
+        let seg1 = vec![(0.0, 0.0), (1.0, 0.0)];
+        let seg2 = vec![(1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let rings = assemble_rings(vec![seg1, seg2]);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].first(), rings[0].last());
+        assert_eq!(rings[0].len(), 4); // (0,0)→(1,0)→(1,1)→(0,0)
+    }
+
+    #[test]
+    fn assemble_rings_reversed_segment() {
+        // Second segment is reversed: A→B, then C→A→B (reversed = B→A→C)
+        // Actually: seg1 = (0,0)→(1,0), seg2 = (1,1)→(1,0) — seg2 reversed joins
+        let seg1 = vec![(0.0, 0.0), (1.0, 0.0)];
+        let seg2 = vec![(1.0, 1.0), (1.0, 0.0)]; // reversed: (1,0)→(1,1)
+        let seg3 = vec![(1.0, 1.0), (0.0, 0.0)]; // closes the ring
+        let rings = assemble_rings(vec![seg1, seg2, seg3]);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].first(), rings[0].last());
+    }
+
+    #[test]
+    fn assemble_rings_two_separate_rings() {
+        let ring1 = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)];
+        let ring2 = vec![(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 5.0)];
+        let rings = assemble_rings(vec![ring1, ring2]);
+        assert_eq!(rings.len(), 2);
+    }
+
+    #[test]
+    fn assemble_rings_empty_input() {
+        let rings = assemble_rings(vec![]);
+        assert!(rings.is_empty());
+    }
+
+    #[test]
+    fn assemble_rings_too_short_segment_dropped() {
+        // A segment with only 2 points that doesn't join anything → too short for a ring
+        let seg = vec![(0.0, 0.0), (1.0, 0.0)];
+        let rings = assemble_rings(vec![seg]);
+        assert!(rings.is_empty()); // needs >= 4 points for a valid ring
     }
 }

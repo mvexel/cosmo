@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
-use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
+use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
 use crate::sinks::{
     ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
 };
@@ -371,19 +371,28 @@ pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
         .any(|table| table.geometry.processes_ways() || table.geometry.relation)
 }
 
+pub fn needs_way_store(config: &CompiledConfig) -> bool {
+    config
+        .tables
+        .values()
+        .any(|table| table.geometry.relation)
+}
+
 pub fn pass1_index_nodes(
     path: &Path,
     node_store: NodeStoreWriter,
     use_parallel: bool,
-) -> Result<(NodeStoreWriter, u64)> {
+    collect_ways: bool,
+) -> Result<(NodeStoreWriter, u64, WayStore)> {
     let mut reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<(u64, f64, f64)>>(64);
+    let way_store: Arc<Mutex<WayStore>> = Arc::new(Mutex::new(HashMap::new()));
     let header_logged = Arc::new(AtomicBool::new(false));
 
     let writer = std::thread::spawn(move || -> Result<(NodeStoreWriter, u64)> {
         let mut node_store = node_store;
         let mut node_count = 0u64;
-        let progress = ProgressCounter::new("Pass 1/2: indexing nodes", 100_000);
+        let progress = ProgressCounter::new("Pass 1/2: indexing", 100_000);
 
         for batch in rx {
             let batch_len = batch.len() as u64;
@@ -405,6 +414,7 @@ pub fn pass1_index_nodes(
     let decode_result = if use_parallel {
         let header_logged = Arc::clone(&header_logged);
         let tx = tx.clone();
+        let way_store = Arc::clone(&way_store);
         reader
             .par_bridge()
             .try_for_each(move |blob_result| -> Result<()> {
@@ -415,23 +425,33 @@ pub fn pass1_index_nodes(
                         Ok(())
                     }
                     Ok(BlobDecode::OsmData(block)) => {
-                        let mut batch = Vec::new();
+                        let mut node_batch = Vec::new();
+                        let mut way_batch: Vec<(i64, Vec<i64>)> = Vec::new();
                         for element in block.elements() {
                             match element {
                                 Element::Node(node) => {
-                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                    node_batch.push((node.id() as u64, node.lat(), node.lon()));
                                 }
                                 Element::DenseNode(node) => {
-                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                    node_batch.push((node.id() as u64, node.lat(), node.lon()));
+                                }
+                                Element::Way(way) if collect_ways => {
+                                    way_batch.push((way.id(), way.refs().collect()));
                                 }
                                 _ => {}
                             }
                         }
 
-                        if !batch.is_empty() {
-                            tx.send(batch).map_err(|err| {
+                        if !node_batch.is_empty() {
+                            tx.send(node_batch).map_err(|err| {
                                 anyhow!("Pipeline: Failed to send node batch: {}", err)
                             })?;
+                        }
+                        if !way_batch.is_empty() {
+                            let mut ws = way_store.lock().unwrap();
+                            for (id, refs) in way_batch {
+                                ws.insert(id, refs);
+                            }
                         }
                         Ok(())
                     }
@@ -452,21 +472,25 @@ pub fn pass1_index_nodes(
                     Ok(())
                 }
                 Ok(BlobDecode::OsmData(block)) => {
-                    let mut batch = Vec::new();
+                    let mut node_batch = Vec::new();
                     for element in block.elements() {
                         match element {
                             Element::Node(node) => {
-                                batch.push((node.id() as u64, node.lat(), node.lon()));
+                                node_batch.push((node.id() as u64, node.lat(), node.lon()));
                             }
                             Element::DenseNode(node) => {
-                                batch.push((node.id() as u64, node.lat(), node.lon()));
+                                node_batch.push((node.id() as u64, node.lat(), node.lon()));
+                            }
+                            Element::Way(way) if collect_ways => {
+                                let mut ws = way_store.lock().unwrap();
+                                ws.insert(way.id(), way.refs().collect());
                             }
                             _ => {}
                         }
                     }
 
-                    if !batch.is_empty() {
-                        tx.send(batch).map_err(|err| {
+                    if !node_batch.is_empty() {
+                        tx.send(node_batch).map_err(|err| {
                             anyhow!("Pipeline: Failed to send node batch: {}", err)
                         })?;
                     }
@@ -514,7 +538,11 @@ pub fn pass1_index_nodes(
     // Only check decode_result if writer succeeded
     decode_result?;
 
-    Ok((node_store, node_count))
+    let way_store = Arc::try_unwrap(way_store)
+        .expect("way_store Arc should have single owner after decode")
+        .into_inner()
+        .unwrap();
+    Ok((node_store, node_count, way_store))
 }
 
 pub fn run_pass<P>(
@@ -619,12 +647,14 @@ pub fn pass2_process(
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     node_store: Arc<NodeStoreReader>,
+    way_store: Arc<WayStore>,
     sinks: SinkMap,
 ) -> Result<HashMap<String, u64>> {
     let processor = Arc::new(StandardProcessor {
         config,
         runtime,
         node_store,
+        way_store,
     });
     run_pass(path, processor, sinks, "Pass 2/2: blocks")
 }
@@ -709,8 +739,13 @@ pub fn process_pbf(
             args.input,
             pass1_mode
         );
-        let (node_store, node_count) = pass1_index_nodes(&args.input, node_store, use_parallel)?;
+        let collect_ways = needs_way_store(&config);
+        let (node_store, node_count, way_store) =
+            pass1_index_nodes(&args.input, node_store, use_parallel, collect_ways)?;
         tracing::info!("Indexed {} nodes.", node_count);
+        if collect_ways {
+            tracing::info!("Indexed {} ways for relation assembly.", way_store.len());
+        }
 
         let finalize_step = match resolved_mode {
             NodeCacheMode::Sparse => "Finalizing node cache (flush + mmap)...",
@@ -723,7 +758,8 @@ pub fn process_pbf(
         tracing::info!("Node cache ready.");
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
-        let result = pass2_process(&args.input, config, runtime, node_store, sinks)?;
+        let way_store = Arc::new(way_store);
+        let result = pass2_process(&args.input, config, runtime, node_store, way_store, sinks)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 
