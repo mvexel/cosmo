@@ -1,0 +1,25 @@
+# Building extraction with multipolygon relation support
+#
+# Many large or complex buildings in OSM are modeled as multipolygon
+# relations (e.g. buildings with courtyards). Set relation: true to
+# include these alongside simple closed-way buildings.
+
+table:
+  name: buildings
+  filter: "building"
+  geometry:
+    node: false
+    way: false
+    closed_way: polygon
+    relation: true
+  columns:
+    - name: name
+      source: tag:name
+    - name: building_type
+      source: tag:building
+    - name: levels
+      source: tag:building:levels
+      type: integer
+    - name: osm_id
+      source: meta:id
+      type: integer
