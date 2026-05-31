@@ -27,4 +27,3 @@ time = { version = "0.3.37", features = ["formatting"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cel = "0.11"
-proj = "0.31.0"
