@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossbeam_channel::bounded;
-use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
+use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock, RelMemberType};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -378,11 +378,73 @@ pub fn needs_way_store(config: &CompiledConfig) -> bool {
         .any(|table| table.geometry.relation)
 }
 
+/// Pass 0: Scan relations to collect the set of member way IDs that will be
+/// needed for relation geometry assembly. This allows pass 1 to collect only
+/// the referenced ways instead of all ways, keeping memory bounded for
+/// planet-scale inputs.
+pub fn pass0_scan_relations(path: &Path) -> Result<HashSet<i64>> {
+    let reader = BlobReader::from_path(path)?;
+    let way_ids: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let progress = Arc::new(ProgressCounter::new("Pass 0: scanning relations", 10_000));
+
+    let way_ids_ref = Arc::clone(&way_ids);
+    let progress_ref = Arc::clone(&progress);
+    reader
+        .par_bridge()
+        .try_for_each(move |blob_result| -> Result<()> {
+            let blob = blob_result?;
+            match blob.decode() {
+                Ok(BlobDecode::OsmData(block)) => {
+                    let mut local_ids: Vec<i64> = Vec::new();
+                    for element in block.elements() {
+                        if let Element::Relation(rel) = element {
+                            let mut is_polygon_type = false;
+                            for (key, value) in rel.tags() {
+                                if key == "type"
+                                    && (value == "multipolygon" || value == "boundary")
+                                {
+                                    is_polygon_type = true;
+                                    break;
+                                }
+                            }
+                            if is_polygon_type {
+                                for member in rel.members() {
+                                    if member.member_type == RelMemberType::Way {
+                                        local_ids.push(member.member_id);
+                                    }
+                                }
+                                progress_ref.inc(1);
+                            }
+                        }
+                    }
+                    if !local_ids.is_empty() {
+                        let mut set = way_ids_ref.lock().unwrap();
+                        set.extend(local_ids);
+                    }
+                    Ok(())
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })?;
+
+    progress.finish();
+    let way_ids = Arc::try_unwrap(way_ids)
+        .expect("pass0 way_ids Arc should have single owner")
+        .into_inner()
+        .unwrap();
+    tracing::info!(
+        "Pass 0: found {} unique way IDs referenced by relations.",
+        way_ids.len()
+    );
+    Ok(way_ids)
+}
+
 pub fn pass1_index_nodes(
     path: &Path,
     node_store: NodeStoreWriter,
     use_parallel: bool,
-    collect_ways: bool,
+    way_filter: Option<Arc<HashSet<i64>>>,
 ) -> Result<(NodeStoreWriter, u64, WayStore)> {
     let mut reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<(u64, f64, f64)>>(64);
@@ -415,6 +477,7 @@ pub fn pass1_index_nodes(
         let header_logged = Arc::clone(&header_logged);
         let tx = tx.clone();
         let way_store = Arc::clone(&way_store);
+        let way_filter = way_filter.clone();
         reader
             .par_bridge()
             .try_for_each(move |blob_result| -> Result<()> {
@@ -435,8 +498,11 @@ pub fn pass1_index_nodes(
                                 Element::DenseNode(node) => {
                                     node_batch.push((node.id() as u64, node.lat(), node.lon()));
                                 }
-                                Element::Way(way) if collect_ways => {
-                                    way_batch.push((way.id(), way.refs().collect()));
+                                Element::Way(way) if way_filter.is_some() => {
+                                    let id = way.id();
+                                    if way_filter.as_ref().unwrap().contains(&id) {
+                                        way_batch.push((id, way.refs().collect()));
+                                    }
                                 }
                                 _ => {}
                             }
@@ -481,9 +547,12 @@ pub fn pass1_index_nodes(
                             Element::DenseNode(node) => {
                                 node_batch.push((node.id() as u64, node.lat(), node.lon()));
                             }
-                            Element::Way(way) if collect_ways => {
-                                let mut ws = way_store.lock().unwrap();
-                                ws.insert(way.id(), way.refs().collect());
+                            Element::Way(way) if way_filter.is_some() => {
+                                let id = way.id();
+                                if way_filter.as_ref().unwrap().contains(&id) {
+                                    let mut ws = way_store.lock().unwrap();
+                                    ws.insert(id, way.refs().collect());
+                                }
                             }
                             _ => {}
                         }
@@ -739,11 +808,32 @@ pub fn process_pbf(
             args.input,
             pass1_mode
         );
-        let collect_ways = needs_way_store(&config);
+        let needs_relations = needs_way_store(&config);
+        if needs_relations {
+            if let Ok(metadata) = std::fs::metadata(&args.input) {
+                if metadata.len() >= crate::config::DENSE_THRESHOLD_BYTES {
+                    let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+                    tracing::warn!(
+                        "Input is {:.1} GB with relation processing enabled. \
+                         Way store memory usage depends on the number of relation members. \
+                         Pass 0 pre-scan will filter to only needed ways.",
+                        size_gb
+                    );
+                }
+            }
+        }
+        let way_filter = if needs_relations {
+            tracing::info!("Pass 0: Scanning relations for member way IDs...");
+            let way_ids = pass0_scan_relations(&args.input)?;
+            Some(Arc::new(way_ids))
+        } else {
+            None
+        };
+
         let (node_store, node_count, way_store) =
-            pass1_index_nodes(&args.input, node_store, use_parallel, collect_ways)?;
+            pass1_index_nodes(&args.input, node_store, use_parallel, way_filter)?;
         tracing::info!("Indexed {} nodes.", node_count);
-        if collect_ways {
+        if needs_relations {
             tracing::info!("Indexed {} ways for relation assembly.", way_store.len());
         }
 
