@@ -226,7 +226,7 @@ pub struct GeometryConfig {
     pub closed_way: ClosedWaySetting,
     #[serde(default = "default_true")]
     pub node: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub relation: bool,
 }
 
