@@ -761,12 +761,12 @@ To emit closed-way polygons while dropping open ways, set `way: false` and
 
 ```yaml
 geometry:
-  relation: true   # Include relations (multipolygons, routes, etc.)
+  relation: true   # Include multipolygon and boundary relations
   # or
   relation: false  # Exclude relations
 ```
 
-**Note:** Relation geometry support is currently limited in Cosmo. Relations are often ignored even when set to `true`.
+**Note:** Cosmo processes `type=multipolygon` and `type=boundary` relations. Member ways are assembled into polygon rings with correct winding order. Inner rings (holes) are supported. Route relations (`type=route`) are not yet supported.
 
 ### Common Geometry Configurations
 
@@ -1056,6 +1056,6 @@ Only `id`, `version`, and `timestamp` are available in the CEL `meta` variable. 
 
 Cosmo uses `cel-rust` v0.11, which has limited standard library support compared to the full CEL specification. String methods like `.upperAscii()`, `.toLowerCase()`, `.contains()`, `.startsWith()`, etc. may not be available. I have not tested this much.
 
-### Relations Not Fully Supported
+### Relation Limitations
 
-Relation geometry processing is currently limited. Even when `relation: true` is set, relations are often skipped. Relation geometry construction (multipolygons, routes, boundaries) is not yet implemented.
+Only `type=multipolygon` and `type=boundary` relations are processed. Route relations (`type=route`), which would produce line geometries, are not yet supported. Relations referencing ways outside the PBF extract will produce incomplete or missing geometries.

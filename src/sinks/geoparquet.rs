@@ -6,10 +6,14 @@ use geozero::{CoordDimensions, ToWkb};
 use parquet::arrow::ArrowWriter;
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
-use proj::Proj;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+
+/// PROJJSON for EPSG:4326 (WGS 84). Static constant extracted from libproj.
+/// This is a well-known, stable definition — embedding it removes the runtime
+/// dependency on libproj (the `proj` crate) which was only used for this string.
+const EPSG_4326_PROJJSON: &str = r#"{"$schema":"https://proj.org/schemas/v0.7/projjson.schema.json","type":"GeographicCRS","name":"WGS 84","datum_ensemble":{"name":"World Geodetic System 1984 ensemble","members":[{"name":"World Geodetic System 1984 (Transit)","id":{"authority":"EPSG","code":1166}},{"name":"World Geodetic System 1984 (G730)","id":{"authority":"EPSG","code":1152}},{"name":"World Geodetic System 1984 (G873)","id":{"authority":"EPSG","code":1153}},{"name":"World Geodetic System 1984 (G1150)","id":{"authority":"EPSG","code":1154}},{"name":"World Geodetic System 1984 (G1674)","id":{"authority":"EPSG","code":1155}},{"name":"World Geodetic System 1984 (G1762)","id":{"authority":"EPSG","code":1156}},{"name":"World Geodetic System 1984 (G2139)","id":{"authority":"EPSG","code":1309}},{"name":"World Geodetic System 1984 (G2296)","id":{"authority":"EPSG","code":1383}}],"ellipsoid":{"name":"WGS 84","semi_major_axis":6378137,"inverse_flattening":298.257223563},"accuracy":"2.0","id":{"authority":"EPSG","code":6326}},"coordinate_system":{"subtype":"ellipsoidal","axis":[{"name":"Geodetic latitude","abbreviation":"Lat","direction":"north","unit":"degree"},{"name":"Geodetic longitude","abbreviation":"Lon","direction":"east","unit":"degree"}]},"scope":"Horizontal component of 3D system.","area":"World.","bbox":{"south_latitude":-90,"west_longitude":-180,"north_latitude":90,"east_longitude":180},"id":{"authority":"EPSG","code":4326}}"#;
 
 pub struct GeoParquetSink {
     writer: Option<ArrowWriter<File>>,
@@ -46,13 +50,8 @@ impl GeoParquetSink {
 
         let schema = Arc::new(Schema::new(fields));
 
-        let crs_json = Proj::new("EPSG:4326")
-            .context("Failed to create PROJ definition for EPSG:4326")?
-            .to_projjson(None, None, None)
-            .context("Failed to generate PROJJSON for EPSG:4326")?;
-
         let crs_value: serde_json::Value =
-            serde_json::from_str(&crs_json).context("Failed to parse PROJJSON string")?;
+            serde_json::from_str(EPSG_4326_PROJJSON).expect("embedded PROJJSON is valid");
 
         let geo_metadata = serde_json::json!({
             "version": "1.0.0",

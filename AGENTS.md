@@ -41,9 +41,10 @@ cosmo/
 
 1. **Configuration Loading**: Parse YAML filters into `FiltersConfig` struct
 2. **Sink Initialization**: Create output writer based on format
-3. **Node Indexing (Pass 1)**: For way/relation processing, cache node coordinates
-4. **Feature Extraction (Pass 2)**: Parallel block processing with filter matching
-5. **Output**: Stream `FeatureRow` to sink, flush and finalize
+3. **Relation Scan (Pass 0)**: If any table has `relation: true`, scan relations to collect member way IDs
+4. **Node/Way Indexing (Pass 1)**: Cache node coordinates; if relations enabled, also cache referenced way member refs
+5. **Feature Extraction (Pass 2)**: Parallel block processing with filter matching, relation geometry assembly
+6. **Output**: Stream `FeatureRow` to sink, flush and finalize
 
 ### Key Abstractions
 

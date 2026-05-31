@@ -1,17 +1,18 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossbeam_channel::bounded;
-use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock};
+use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock, RelMemberType};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
-use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor};
+use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
 use crate::sinks::{
     ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
+    MapRouletteSink,
 };
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
@@ -135,6 +136,8 @@ pub enum OutputFormat {
     GeoParquet,
     #[value(name = "csv")]
     Csv,
+    #[value(name = "maproulette")]
+    MapRoulette,
 }
 
 pub fn resolve_node_cache_mode(
@@ -189,6 +192,7 @@ pub fn output_format_label(format: &OutputFormat) -> &'static str {
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "geoparquet",
         OutputFormat::Csv => "csv",
+        OutputFormat::MapRoulette => "maproulette",
     }
 }
 
@@ -278,6 +282,15 @@ pub fn init_sink(
                 Ok(Box::new(CsvWktSink::new(output, columns)?))
             }
         }
+        OutputFormat::MapRoulette => {
+            if output == Path::new("-") {
+                tracing::info!("Sink: {} -> stdout", output_format_label(format));
+                Ok(Box::new(MapRouletteSink::stdout()?))
+            } else {
+                tracing::info!("Sink: {} -> {:?}", output_format_label(format), output);
+                Ok(Box::new(MapRouletteSink::new(output)?))
+            }
+        }
     }
 }
 
@@ -309,6 +322,7 @@ pub fn init_sinks(
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "parquet",
         OutputFormat::Csv => "csv",
+        OutputFormat::MapRoulette => "geojson",
     };
 
     for (table_name, table_config) in &config.tables {
@@ -325,6 +339,7 @@ pub fn init_sinks(
                 let columns = collect_columns_for_table(table_config)?;
                 Box::new(CsvWktSink::new(&file_path, columns)?)
             }
+            OutputFormat::MapRoulette => Box::new(MapRouletteSink::new(&file_path)?),
         };
 
         tracing::info!(
@@ -371,19 +386,90 @@ pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
         .any(|table| table.geometry.processes_ways() || table.geometry.relation)
 }
 
+pub fn needs_way_store(config: &CompiledConfig) -> bool {
+    config
+        .tables
+        .values()
+        .any(|table| table.geometry.relation)
+}
+
+/// Pass 0: Scan relations to collect the set of member way IDs that will be
+/// needed for relation geometry assembly. This allows pass 1 to collect only
+/// the referenced ways instead of all ways, keeping memory bounded for
+/// planet-scale inputs.
+pub fn pass0_scan_relations(path: &Path) -> Result<HashSet<i64>> {
+    let reader = BlobReader::from_path(path)?;
+    let way_ids: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let progress = Arc::new(ProgressCounter::new("Pass 0: scanning relations", 10_000));
+
+    let way_ids_ref = Arc::clone(&way_ids);
+    let progress_ref = Arc::clone(&progress);
+    reader
+        .par_bridge()
+        .try_for_each(move |blob_result| -> Result<()> {
+            let blob = blob_result?;
+            match blob.decode() {
+                Ok(BlobDecode::OsmData(block)) => {
+                    let mut local_ids: Vec<i64> = Vec::new();
+                    for element in block.elements() {
+                        if let Element::Relation(rel) = element {
+                            let mut is_polygon_type = false;
+                            for (key, value) in rel.tags() {
+                                if key == "type"
+                                    && (value == "multipolygon" || value == "boundary")
+                                {
+                                    is_polygon_type = true;
+                                    break;
+                                }
+                            }
+                            if is_polygon_type {
+                                for member in rel.members() {
+                                    if member.member_type == RelMemberType::Way {
+                                        local_ids.push(member.member_id);
+                                    }
+                                }
+                                progress_ref.inc(1);
+                            }
+                        }
+                    }
+                    if !local_ids.is_empty() {
+                        let mut set = way_ids_ref.lock().unwrap();
+                        set.extend(local_ids);
+                    }
+                    Ok(())
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })?;
+
+    progress.finish();
+    let way_ids = Arc::try_unwrap(way_ids)
+        .expect("pass0 way_ids Arc should have single owner")
+        .into_inner()
+        .unwrap();
+    tracing::info!(
+        "Pass 0: found {} unique way IDs referenced by relations.",
+        way_ids.len()
+    );
+    Ok(way_ids)
+}
+
 pub fn pass1_index_nodes(
     path: &Path,
     node_store: NodeStoreWriter,
     use_parallel: bool,
-) -> Result<(NodeStoreWriter, u64)> {
+    way_filter: Option<Arc<HashSet<i64>>>,
+) -> Result<(NodeStoreWriter, u64, WayStore)> {
     let mut reader = BlobReader::from_path(path)?;
     let (tx, rx) = bounded::<Vec<(u64, f64, f64)>>(64);
+    let way_store: Arc<Mutex<WayStore>> = Arc::new(Mutex::new(HashMap::new()));
     let header_logged = Arc::new(AtomicBool::new(false));
 
     let writer = std::thread::spawn(move || -> Result<(NodeStoreWriter, u64)> {
         let mut node_store = node_store;
         let mut node_count = 0u64;
-        let progress = ProgressCounter::new("Pass 1/2: indexing nodes", 100_000);
+        let progress = ProgressCounter::new("Pass 1/2: indexing", 100_000);
 
         for batch in rx {
             let batch_len = batch.len() as u64;
@@ -405,6 +491,8 @@ pub fn pass1_index_nodes(
     let decode_result = if use_parallel {
         let header_logged = Arc::clone(&header_logged);
         let tx = tx.clone();
+        let way_store = Arc::clone(&way_store);
+        let way_filter = way_filter.clone();
         reader
             .par_bridge()
             .try_for_each(move |blob_result| -> Result<()> {
@@ -415,23 +503,36 @@ pub fn pass1_index_nodes(
                         Ok(())
                     }
                     Ok(BlobDecode::OsmData(block)) => {
-                        let mut batch = Vec::new();
+                        let mut node_batch = Vec::new();
+                        let mut way_batch: Vec<(i64, Vec<i64>)> = Vec::new();
                         for element in block.elements() {
                             match element {
                                 Element::Node(node) => {
-                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                    node_batch.push((node.id() as u64, node.lat(), node.lon()));
                                 }
                                 Element::DenseNode(node) => {
-                                    batch.push((node.id() as u64, node.lat(), node.lon()));
+                                    node_batch.push((node.id() as u64, node.lat(), node.lon()));
+                                }
+                                Element::Way(way) if way_filter.is_some() => {
+                                    let id = way.id();
+                                    if way_filter.as_ref().unwrap().contains(&id) {
+                                        way_batch.push((id, way.refs().collect()));
+                                    }
                                 }
                                 _ => {}
                             }
                         }
 
-                        if !batch.is_empty() {
-                            tx.send(batch).map_err(|err| {
+                        if !node_batch.is_empty() {
+                            tx.send(node_batch).map_err(|err| {
                                 anyhow!("Pipeline: Failed to send node batch: {}", err)
                             })?;
+                        }
+                        if !way_batch.is_empty() {
+                            let mut ws = way_store.lock().unwrap();
+                            for (id, refs) in way_batch {
+                                ws.insert(id, refs);
+                            }
                         }
                         Ok(())
                     }
@@ -452,21 +553,28 @@ pub fn pass1_index_nodes(
                     Ok(())
                 }
                 Ok(BlobDecode::OsmData(block)) => {
-                    let mut batch = Vec::new();
+                    let mut node_batch = Vec::new();
                     for element in block.elements() {
                         match element {
                             Element::Node(node) => {
-                                batch.push((node.id() as u64, node.lat(), node.lon()));
+                                node_batch.push((node.id() as u64, node.lat(), node.lon()));
                             }
                             Element::DenseNode(node) => {
-                                batch.push((node.id() as u64, node.lat(), node.lon()));
+                                node_batch.push((node.id() as u64, node.lat(), node.lon()));
+                            }
+                            Element::Way(way) if way_filter.is_some() => {
+                                let id = way.id();
+                                if way_filter.as_ref().unwrap().contains(&id) {
+                                    let mut ws = way_store.lock().unwrap();
+                                    ws.insert(id, way.refs().collect());
+                                }
                             }
                             _ => {}
                         }
                     }
 
-                    if !batch.is_empty() {
-                        tx.send(batch).map_err(|err| {
+                    if !node_batch.is_empty() {
+                        tx.send(node_batch).map_err(|err| {
                             anyhow!("Pipeline: Failed to send node batch: {}", err)
                         })?;
                     }
@@ -514,7 +622,11 @@ pub fn pass1_index_nodes(
     // Only check decode_result if writer succeeded
     decode_result?;
 
-    Ok((node_store, node_count))
+    let way_store = Arc::try_unwrap(way_store)
+        .expect("way_store Arc should have single owner after decode")
+        .into_inner()
+        .unwrap();
+    Ok((node_store, node_count, way_store))
 }
 
 pub fn run_pass<P>(
@@ -619,12 +731,14 @@ pub fn pass2_process(
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     node_store: Arc<NodeStoreReader>,
+    way_store: Arc<WayStore>,
     sinks: SinkMap,
 ) -> Result<HashMap<String, u64>> {
     let processor = Arc::new(StandardProcessor {
         config,
         runtime,
         node_store,
+        way_store,
     });
     run_pass(path, processor, sinks, "Pass 2/2: blocks")
 }
@@ -709,8 +823,34 @@ pub fn process_pbf(
             args.input,
             pass1_mode
         );
-        let (node_store, node_count) = pass1_index_nodes(&args.input, node_store, use_parallel)?;
+        let needs_relations = needs_way_store(&config);
+        if needs_relations {
+            if let Ok(metadata) = std::fs::metadata(&args.input) {
+                if metadata.len() >= crate::config::DENSE_THRESHOLD_BYTES {
+                    let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+                    tracing::warn!(
+                        "Input is {:.1} GB with relation processing enabled. \
+                         Way store memory usage depends on the number of relation members. \
+                         Pass 0 pre-scan will filter to only needed ways.",
+                        size_gb
+                    );
+                }
+            }
+        }
+        let way_filter = if needs_relations {
+            tracing::info!("Pass 0: Scanning relations for member way IDs...");
+            let way_ids = pass0_scan_relations(&args.input)?;
+            Some(Arc::new(way_ids))
+        } else {
+            None
+        };
+
+        let (node_store, node_count, way_store) =
+            pass1_index_nodes(&args.input, node_store, use_parallel, way_filter)?;
         tracing::info!("Indexed {} nodes.", node_count);
+        if needs_relations {
+            tracing::info!("Indexed {} ways for relation assembly.", way_store.len());
+        }
 
         let finalize_step = match resolved_mode {
             NodeCacheMode::Sparse => "Finalizing node cache (flush + mmap)...",
@@ -723,7 +863,8 @@ pub fn process_pbf(
         tracing::info!("Node cache ready.");
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
-        let result = pass2_process(&args.input, config, runtime, node_store, sinks)?;
+        let way_store = Arc::new(way_store);
+        let result = pass2_process(&args.input, config, runtime, node_store, way_store, sinks)?;
 
         // Temp file (if any) is cleaned up when node_store is dropped
 

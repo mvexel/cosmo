@@ -995,3 +995,157 @@ table:
         );
     }
 }
+
+// =============================================================================
+// Relation / Multipolygon Tests
+// =============================================================================
+
+#[test]
+fn relation_multipolygon_outputs_polygons() {
+    // r7702932 is a building with outer + inner (hole)
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+      - name: building
+        source: "tag:building"
+"#;
+    let lines = run_cosmo(yaml);
+    assert!(
+        !lines.is_empty(),
+        "should extract at least one multipolygon relation"
+    );
+
+    for line in &lines {
+        let feature: Value = serde_json::from_str(line).expect("valid JSON");
+        let geom_type = feature["geometry"]["type"].as_str().unwrap();
+        assert!(
+            geom_type == "Polygon" || geom_type == "MultiPolygon",
+            "relation geometry should be Polygon or MultiPolygon, got {}",
+            geom_type
+        );
+    }
+}
+
+#[test]
+fn relation_with_inner_ring_has_hole() {
+    // r7702932: Mountain Courtyard Apartments — outer ring + inner courtyard
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building=apartments"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(lines.len(), 1, "should match exactly one apartments relation");
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let geom = &feature["geometry"];
+    assert_eq!(geom["type"].as_str().unwrap(), "Polygon");
+
+    let coords = geom["coordinates"].as_array().unwrap();
+    assert!(
+        coords.len() >= 2,
+        "polygon should have exterior + at least one interior ring (hole), got {} ring(s)",
+        coords.len()
+    );
+}
+
+#[test]
+fn relation_default_false_skips_relations() {
+    // Default geometry config has relation: false (via default_true serde)
+    // Actually, the default for relation is false per GeometryConfig::default()
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+    columns:
+      - name: name
+        source: "tag:name"
+"#;
+    let lines = run_cosmo(yaml);
+    // With node, way, and closed_way all disabled and relation defaulting to false,
+    // nothing should match
+    assert!(
+        lines.is_empty(),
+        "with all geometry modes disabled (relation defaults to false), no output expected"
+    );
+}
+
+#[test]
+fn relation_multi_way_outer_ring_assembles() {
+    // r13211139: natural=water with 2 outer ways forming one ring
+    let yaml = r#"
+tables:
+  water:
+    filter: "natural=water"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: natural
+        source: "tag:natural"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(lines.len(), 1, "should match exactly one water relation");
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let geom_type = feature["geometry"]["type"].as_str().unwrap();
+    // Two outer ways should be assembled into a single polygon ring
+    assert_eq!(
+        geom_type, "Polygon",
+        "two-way outer ring should assemble into a Polygon"
+    );
+}
+
+#[test]
+fn relation_metadata_is_populated() {
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building=apartments"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+      - name: osm_id
+        source: "meta:id"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(lines.len(), 1);
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let props = &feature["properties"];
+    assert_eq!(
+        props["name"].as_str().unwrap(),
+        "Mountain Courtyard Apartments"
+    );
+    // Relation ID should be populated from metadata
+    let osm_id = props["osm_id"].as_str().unwrap();
+    assert_eq!(osm_id, "7702932");
+}

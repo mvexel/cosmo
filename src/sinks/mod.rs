@@ -7,18 +7,18 @@ pub mod csv_wkt;
 pub mod geojson;
 pub mod geojsonl;
 pub mod geoparquet;
+pub mod maproulette;
 
 pub use self::csv_wkt::CsvWktSink;
 pub use self::geojson::GeoJsonSink;
 pub use self::geojsonl::GeoJsonlSink;
 pub use self::geoparquet::GeoParquetSink;
+pub use self::maproulette::MapRouletteSink;
 
 #[derive(Clone, Debug)]
 pub enum ColumnValue {
     String(String),
-    #[allow(dead_code)]
     Integer(i64),
-    #[allow(dead_code)]
     Float(f64),
     Json(serde_json::Value),
 }
