@@ -2,6 +2,7 @@ use anyhow::Result;
 use geo::algorithm::bounding_rect::BoundingRect;
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::intersects::Intersects;
+use geo::algorithm::winding_order::Winding;
 use geo_types::{Geometry, LineString, Point, Polygon, Rect};
 use osmpbf::{Element, PrimitiveBlock};
 use serde_json::{Map, Value};
@@ -209,7 +210,7 @@ pub fn build_feature_row(
 
 pub fn build_way_geometry(
     geometry_cfg: &crate::config::GeometryConfig,
-    line_string: LineString<f64>,
+    mut line_string: LineString<f64>,
     first_coord: (f64, f64),
 ) -> Option<Geometry<f64>> {
     if line_string.is_closed() {
@@ -217,8 +218,12 @@ pub fn build_way_geometry(
             return None;
         }
         return Some(match geometry_cfg.closed_way.mode() {
-            ClosedWayMode::Polygon => Geometry::Polygon(Polygon::new(line_string, vec![])),
+            ClosedWayMode::Polygon => {
+                line_string.make_ccw_winding();
+                Geometry::Polygon(Polygon::new(line_string, vec![]))
+            }
             ClosedWayMode::Centroid => {
+                line_string.make_ccw_winding();
                 let polygon = Polygon::new(line_string, vec![]);
                 let centroid = polygon
                     .centroid()
@@ -409,6 +414,49 @@ mod tests {
     use super::*;
     use crate::config::CompiledTable;
     use crate::sinks::ColumnType;
+    use geo::algorithm::winding_order::Winding;
+
+    #[test]
+    fn polygon_exterior_is_ccw_regardless_of_input_winding() {
+        let geometry_cfg = crate::config::GeometryConfig {
+            way: crate::config::WaySetting::Disabled,
+            closed_way: crate::config::ClosedWaySetting::Enabled(ClosedWayMode::Polygon),
+            node: false,
+            relation: false,
+        };
+
+        // CW input: (0,0) -> (0,1) -> (1,1) -> (1,0) -> (0,0)
+        let cw_coords: Vec<(f64, f64)> =
+            vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)];
+        let first = cw_coords[0];
+        let cw_ring = LineString::from(cw_coords);
+        assert!(cw_ring.is_cw(), "precondition: input should be CW");
+
+        let geometry = build_way_geometry(&geometry_cfg, cw_ring, first).unwrap();
+        let Geometry::Polygon(poly) = geometry else {
+            panic!("expected polygon");
+        };
+        assert!(
+            poly.exterior().is_ccw(),
+            "polygon exterior must be CCW per RFC 7946"
+        );
+
+        // CCW input should stay CCW
+        let ccw_coords: Vec<(f64, f64)> =
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        let first = ccw_coords[0];
+        let ccw_ring = LineString::from(ccw_coords);
+        assert!(ccw_ring.is_ccw(), "precondition: input should be CCW");
+
+        let geometry = build_way_geometry(&geometry_cfg, ccw_ring, first).unwrap();
+        let Geometry::Polygon(poly) = geometry else {
+            panic!("expected polygon");
+        };
+        assert!(
+            poly.exterior().is_ccw(),
+            "polygon exterior must remain CCW"
+        );
+    }
 
     #[test]
     fn closed_way_can_be_linestring() {
