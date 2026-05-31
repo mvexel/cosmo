@@ -8,6 +8,7 @@ use osmpbf::{Element, PrimitiveBlock};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::{
     ClosedWayMode, ColumnSource, CompiledColumn, CompiledConfig, RuntimeConfig, WayGeometryMode,
@@ -311,11 +312,28 @@ pub fn process_block_collect(
                 for (table_name, table) in &config.tables {
                     if table.geometry.processes_ways() && evaluate_filter(&table.filter, &tag_map) {
                         let refs: Vec<i64> = way.refs().collect();
+                        let ref_count = refs.len();
                         let coords: Vec<(f64, f64)> = refs
                             .iter()
                             .filter_map(|&id| node_store.get(id as u64))
                             .collect();
 
+                        if coords.len() < ref_count {
+                            static MISSING_NODE_WARNINGS: AtomicU64 = AtomicU64::new(0);
+                            let count = MISSING_NODE_WARNINGS.fetch_add(1, Ordering::Relaxed);
+                            let missing = ref_count - coords.len();
+                            if count < 5 {
+                                tracing::warn!(
+                                    "Way {} has {}/{} missing node references",
+                                    way.id(), missing, ref_count
+                                );
+                            } else if count == 5 {
+                                tracing::warn!(
+                                    "Way {} has {}/{} missing node references (suppressing further warnings)",
+                                    way.id(), missing, ref_count
+                                );
+                            }
+                        }
                         if coords.len() >= 2 {
                             let first_coord = coords[0];
                             let line_string = LineString::from(coords);
