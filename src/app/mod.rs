@@ -12,6 +12,7 @@ use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig}
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
 use crate::sinks::{
     ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
+    MapRouletteSink,
 };
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
@@ -135,6 +136,8 @@ pub enum OutputFormat {
     GeoParquet,
     #[value(name = "csv")]
     Csv,
+    #[value(name = "maproulette")]
+    MapRoulette,
 }
 
 pub fn resolve_node_cache_mode(
@@ -189,6 +192,7 @@ pub fn output_format_label(format: &OutputFormat) -> &'static str {
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "geoparquet",
         OutputFormat::Csv => "csv",
+        OutputFormat::MapRoulette => "maproulette",
     }
 }
 
@@ -278,6 +282,15 @@ pub fn init_sink(
                 Ok(Box::new(CsvWktSink::new(output, columns)?))
             }
         }
+        OutputFormat::MapRoulette => {
+            if output == Path::new("-") {
+                tracing::info!("Sink: {} -> stdout", output_format_label(format));
+                Ok(Box::new(MapRouletteSink::stdout()?))
+            } else {
+                tracing::info!("Sink: {} -> {:?}", output_format_label(format), output);
+                Ok(Box::new(MapRouletteSink::new(output)?))
+            }
+        }
     }
 }
 
@@ -309,6 +322,7 @@ pub fn init_sinks(
         OutputFormat::GeoJsonl => "geojsonl",
         OutputFormat::GeoParquet => "parquet",
         OutputFormat::Csv => "csv",
+        OutputFormat::MapRoulette => "geojson",
     };
 
     for (table_name, table_config) in &config.tables {
@@ -325,6 +339,7 @@ pub fn init_sinks(
                 let columns = collect_columns_for_table(table_config)?;
                 Box::new(CsvWktSink::new(&file_path, columns)?)
             }
+            OutputFormat::MapRoulette => Box::new(MapRouletteSink::new(&file_path)?),
         };
 
         tracing::info!(
