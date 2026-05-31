@@ -1,31 +1,46 @@
 # Architecture Improvements — Work Log
 
-Branch: `architecture-improvements`
-Base: `0.2.0` (`83fa1b0`)
+## Branches
+
+| Branch | Base | Purpose |
+|--------|------|---------|
+| `architecture-improvements` | `0.2.0` | Cleanup, correctness, tests, relation support, boundary relations |
+| `planet-scale-relations` | `architecture-improvements` | 3-pass architecture for large inputs |
 
 ## Decision Log
 
 | # | Decision | Rationale | ADR? |
 |---|----------|-----------|------|
-| D1 | Produce typed `ColumnValue::Integer`/`Float` in pipeline when column type and tag value agree | Variants were matched in all 4 sinks but never constructed in production. Fix produces typed values upstream, exercising existing arms and avoiding re-parse at sink time. | No |
-| D2 | Eliminate `coords.clone()` on way hot path | `build_way_geometry` received full `&[(f64,f64)]` but only used `coords[0]` for centroid fallback. Changed to `first_coord: (f64, f64)`. | No |
-| D3 | Embed PROJJSON as static string, drop `proj` dep | `proj` pulled libproj (C dep) for a single constant. EPSG:4326 PROJJSON is stable and well-known. | No |
-| D4 | Enforce CCW winding order on polygon exteriors | GeoJSON RFC 7946 and GeoParquet/OGC require it. OSM data has no winding guarantee. | No — spec compliance |
-| D5 | Warn on missing nodes, rate-limited | Silent data loss is worse than noisy warnings. Rate-limit to avoid flooding on incomplete extracts. | No |
-| D6 | In-memory `HashMap` way store for relation support | Extract-scale only. Planet-scale would need disk-backed store — out of scope for now. | **ADR-001** |
-| D7 | Multipolygon relations only for initial relation support | Route/boundary relations need different geometry types. Multipolygon is the highest-value relation type. | **ADR-001** |
-| D8 | Fix `relation` serde default from `default_true` to `#[serde(default)]` | Caught by integration test. Without fix, existing configs would suddenly process relations on upgrade. Must be opt-in. | No — bug fix |
+| D1 | Produce typed `ColumnValue::Integer`/`Float` upstream | Variants matched in sinks but never constructed. Avoids re-parse at sink time. | No |
+| D2 | Eliminate `coords.clone()` on way hot path | Only `coords[0]` was used. Changed to `first_coord: (f64, f64)`. | No |
+| D3 | Embed PROJJSON as static string, drop `proj` dep | `proj` pulled libproj for a single constant. | No |
+| D4 | Enforce CCW winding order on polygon exteriors | Required by GeoJSON RFC 7946 and GeoParquet/OGC. | No |
+| D5 | Warn on missing nodes, rate-limited | Silent data loss is worse than noisy warnings. | No |
+| D6 | In-memory way store with pass0 filtering | Extract-scale: collect all relation-referenced ways. Planet-scale: pass0 pre-scan limits to ~20M ways (~2 GB). | **ADR-001** |
+| D7 | Multipolygon + boundary relations | Both use identical ring assembly. Route relations excluded (need MultiLineString). | **ADR-001** |
+| D8 | Fix `relation` serde default to `false` | Caught by integration test. Existing configs must not suddenly process relations. | No |
+| D9 | 3-pass when relations enabled | Pass 0 scans relations for way IDs. Pass 1 collects only those ways. No extra cost when relations disabled. | **ADR-001** |
 
-## Work Log
+## Commit Log
 
-| Step | Description | Commit | Status |
-|------|-------------|--------|--------|
-| 0 | Add mise.toml for toolchain management | `113e7dc` | Done |
-| 1 | Produce typed ColumnValue in pipeline | `d29dd5f` | Done |
-| 2 | Eliminate `coords.clone()` on hot path | `7c7c9f4` | Done |
-| 3 | Replace `proj` with static PROJJSON | `3302806` | Done |
-| 4 | Enforce polygon winding order | `81e5b73` | Done |
-| 5 | Warn on missing nodes in ways | `c795332` | Done |
-| 6 | Strengthen pipeline unit tests | `cec3f62` | Done |
-| 7-9 | Implement multipolygon relation support | `9413dfe` | Done |
-| 10 | Add relation integration tests + fix default | `593084c` | Done |
+### `architecture-improvements`
+
+| Commit | Description |
+|--------|-------------|
+| `113e7dc` | Add mise.toml pinning Rust 1.88.0 |
+| `7c7c9f4` | Eliminate `coords.clone()` on way hot path |
+| `3302806` | Remove `proj` crate, embed EPSG:4326 PROJJSON |
+| `d29dd5f` | Produce typed `ColumnValue::Integer/Float` from pipeline |
+| `81e5b73` | Enforce CCW winding order on polygon exteriors |
+| `c795332` | Warn on missing node references in ways |
+| `cec3f62` | 11 pipeline unit tests |
+| `9413dfe` | Multipolygon relation support |
+| `593084c` | Relation integration tests + fix default |
+| `96a008e` | Worklog + ADR-001 |
+| `bce14e9` | Boundary relation support |
+
+### `planet-scale-relations`
+
+| Commit | Description |
+|--------|-------------|
+| `81f1e87` | 3-pass architecture for planet-scale relations |
