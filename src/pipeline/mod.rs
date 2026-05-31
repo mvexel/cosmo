@@ -17,7 +17,7 @@ use crate::mapping::evaluate_mapping;
 use crate::metadata::{
     build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value, MetadataFields,
 };
-use crate::sinks::{ColumnValue, FeatureRow};
+use crate::sinks::{ColumnType, ColumnValue, FeatureRow};
 use crate::storage::NodeStoreReader;
 use crate::utils::build_tag_map;
 
@@ -99,7 +99,17 @@ pub fn build_feature_row(
 
     for col in columns {
         let value = match &col.source {
-            ColumnSource::Tag(key) => tags.get(key).map(|v| ColumnValue::String(v.clone())),
+            ColumnSource::Tag(key) => tags.get(key).map(|v| match col.col_type {
+                ColumnType::Integer => v
+                    .parse::<i64>()
+                    .map(ColumnValue::Integer)
+                    .unwrap_or_else(|_| ColumnValue::String(v.clone())),
+                ColumnType::Float => v
+                    .parse::<f64>()
+                    .map(ColumnValue::Float)
+                    .unwrap_or_else(|_| ColumnValue::String(v.clone())),
+                _ => ColumnValue::String(v.clone()),
+            }),
             ColumnSource::Meta(key) => {
                 if let Some(m) = &metadata {
                     extract_meta_value(key, Some(m)).map(ColumnValue::String)
