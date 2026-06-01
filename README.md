@@ -155,6 +155,7 @@ Filters are defined in YAML and consist of:
 | `expr1 \| expr2` | Logical OR | `amenity \| shop` |
 | `key=*pattern*` | Glob matching | `highway=*_link` |
 | `key>=value` | Numeric comparison | `lanes>=2` |
+| `meta:version >= 2`, `meta:timestamp >= "2024-01-01"` | OSM metadata comparison | Matches by version, timestamp, user, uid, changeset, visibility, id, or element type |
 
 **See the [Filter YAML Guide](docs/filter_yaml_guide.md) for complete syntax and examples**
 
@@ -165,7 +166,7 @@ Extract data from OSM features:
 | Source | Description | Example |
 |--------|-------------|---------|
 | `tag:key` | OSM tag value | `source: tag:name` |
-| `meta:field` | Metadata field (id, version, timestamp, uid, user, changeset, visible) | `source: meta:id` |
+| `meta:field` | Metadata field (id, type, version, timestamp, uid, user, changeset, visible) | `source: meta:id` |
 | `tags` | All tags as JSON | `source: tags` (requires `type: json`) |
 | `meta` | All metadata as JSON | `source: meta` (requires `type: json`) |
 | `refs` | Way node IDs as JSON array | `source: refs` (requires `type: json`) |

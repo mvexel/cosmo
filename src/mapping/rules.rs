@@ -46,6 +46,13 @@ impl Mapping {
             let filter = parse_filter(&rule.match_expr).map_err(|e| {
                 anyhow::anyhow!("Error parsing rule {} in mapping '{}': {}", i + 1, name, e)
             })?;
+            if filter.uses_metadata() {
+                anyhow::bail!(
+                    "Mapping '{}' rule '{}' uses metadata filters; mapping rules can only match tags",
+                    name,
+                    rule.match_expr
+                );
+            }
 
             rules.push(CompiledRule {
                 filter,
@@ -151,5 +158,21 @@ mod tests {
             evaluate_mapping(&mapping, &tags(&[("highway", "primary")])),
             None
         );
+    }
+
+    #[test]
+    fn rejects_metadata_filters_in_mapping_rules() {
+        let config = MappingConfig {
+            rules: vec![MappingRule {
+                match_expr: r#"meta:user="Jane Doe""#.into(),
+                value: "jane".into(),
+            }],
+            default: None,
+        };
+
+        let err = Mapping::compile("editors".into(), &config)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mapping rules can only match tags"));
     }
 }

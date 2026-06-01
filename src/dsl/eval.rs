@@ -1,15 +1,34 @@
 //! Evaluator for the filter DSL AST.
 
-use super::ast::{CompareOp, FilterAst, TagValue};
+use super::ast::{CompareOp, FilterAst, MetadataCompareValue, TagValue};
+use crate::metadata::{
+    metadata_integer_value, metadata_value_exists, metadata_value_string, MetadataField,
+    MetadataFields,
+};
 use std::collections::HashMap;
+
+pub struct FilterContext<'a> {
+    pub tags: &'a HashMap<String, String>,
+    pub metadata: Option<&'a MetadataFields>,
+}
 
 /// Evaluate a filter AST against a set of tags.
 pub fn evaluate_filter(ast: &FilterAst, tags: &HashMap<String, String>) -> bool {
+    evaluate_filter_with_context(
+        ast,
+        &FilterContext {
+            tags,
+            metadata: None,
+        },
+    )
+}
+
+pub fn evaluate_filter_with_context(ast: &FilterAst, ctx: &FilterContext<'_>) -> bool {
     match ast {
         FilterAst::True => true,
 
         FilterAst::TagExists { key, negated } => {
-            let exists = tags.contains_key(key);
+            let exists = ctx.tags.contains_key(key);
             if *negated {
                 !exists
             } else {
@@ -17,30 +36,61 @@ pub fn evaluate_filter(ast: &FilterAst, tags: &HashMap<String, String>) -> bool 
             }
         }
 
-        FilterAst::TagMatch { key, values } => match tags.get(key) {
+        FilterAst::TagMatch { key, values } => match ctx.tags.get(key) {
             None => false,
             Some(actual) => values.iter().any(|v| match_value(v, actual)),
         },
 
-        FilterAst::NumericCompare { key, op, value } => {
-            match tags.get(key) {
+        FilterAst::NumericCompare { key, op, value } => match ctx.tags.get(key) {
+            None => false,
+            Some(actual) => match parse_numeric(actual) {
                 None => false,
-                Some(actual) => {
-                    // Try to parse the tag value as a number
-                    match parse_numeric(actual) {
-                        None => false,
-                        Some(actual_num) => compare(*op, actual_num, *value),
-                    }
-                }
+                Some(actual_num) => compare(*op, actual_num, *value),
+            },
+        },
+
+        FilterAst::MetadataExists { field, negated } => {
+            let exists = metadata_value_exists(*field, ctx.metadata);
+            if *negated {
+                !exists
+            } else {
+                exists
             }
         }
 
-        FilterAst::And(exprs) => exprs.iter().all(|e| evaluate_filter(e, tags)),
+        FilterAst::MetadataMatch { field, values } => {
+            match metadata_value_string(*field, ctx.metadata) {
+                None => false,
+                Some(actual) => values.iter().any(|v| match_value(v, &actual)),
+            }
+        }
 
-        FilterAst::Or(exprs) => exprs.iter().any(|e| evaluate_filter(e, tags)),
+        FilterAst::MetadataCompare { field, op, value } => match value {
+            MetadataCompareValue::Integer(expected) => metadata_integer_value(*field, ctx.metadata)
+                .is_some_and(|actual| compare_i64(*op, actual, *expected)),
+            MetadataCompareValue::TimestampMillis(expected) => {
+                metadata_timestamp_millis(*field, ctx.metadata)
+                    .is_some_and(|actual| compare_i64(*op, actual, *expected))
+            }
+        },
 
-        FilterAst::Not(inner) => !evaluate_filter(inner, tags),
+        FilterAst::And(exprs) => exprs.iter().all(|e| evaluate_filter_with_context(e, ctx)),
+
+        FilterAst::Or(exprs) => exprs.iter().any(|e| evaluate_filter_with_context(e, ctx)),
+
+        FilterAst::Not(inner) => !evaluate_filter_with_context(inner, ctx),
     }
+}
+
+fn metadata_timestamp_millis(
+    field: MetadataField,
+    metadata: Option<&MetadataFields>,
+) -> Option<i64> {
+    if field != MetadataField::Timestamp {
+        return None;
+    }
+
+    metadata.and_then(|m| m.timestamp_millis)
 }
 
 /// Match a TagValue against an actual value.
@@ -113,16 +163,40 @@ fn compare(op: CompareOp, left: f64, right: f64) -> bool {
     }
 }
 
+fn compare_i64(op: CompareOp, left: i64, right: i64) -> bool {
+    match op {
+        CompareOp::Eq => left == right,
+        CompareOp::Ne => left != right,
+        CompareOp::Lt => left < right,
+        CompareOp::Le => left <= right,
+        CompareOp::Gt => left > right,
+        CompareOp::Ge => left >= right,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::parse_filter;
+    use crate::dsl::{parse_filter, FilterContext};
+    use crate::metadata::{ElementType, MetadataFields};
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    fn metadata() -> MetadataFields {
+        MetadataFields {
+            id: 42,
+            element_type: ElementType::Node,
+            visible: Some(true),
+            version: Some(3),
+            changeset: Some(99),
+            timestamp_millis: Some(1_704_067_200_000),
+            uid: Some(7),
+            user: Some("Jane Doe".to_string()),
+        }
     }
 
     #[test]
@@ -204,5 +278,69 @@ mod tests {
         ));
         assert!(evaluate_filter(&ast, &tags(&[("highway", "trunk_link")])));
         assert!(!evaluate_filter(&ast, &tags(&[("highway", "motorway")])));
+    }
+
+    #[test]
+    fn test_metadata_user_match() {
+        let ast = parse_filter(r#"meta:user="Jane Doe""#).unwrap();
+        let tag_map = tags(&[]);
+        let meta = metadata();
+        assert!(evaluate_filter_with_context(
+            &ast,
+            &FilterContext {
+                tags: &tag_map,
+                metadata: Some(&meta),
+            }
+        ));
+    }
+
+    #[test]
+    fn test_metadata_type_visible_and_version_match() {
+        let ast = parse_filter("meta:type=node & meta:visible=true & meta:version>=2").unwrap();
+        let tag_map = tags(&[]);
+        let meta = metadata();
+        assert!(evaluate_filter_with_context(
+            &ast,
+            &FilterContext {
+                tags: &tag_map,
+                metadata: Some(&meta),
+            }
+        ));
+    }
+
+    #[test]
+    fn test_metadata_timestamp_match() {
+        let ast = parse_filter(r#"meta:timestamp>="2024-01-01""#).unwrap();
+        let tag_map = tags(&[]);
+        let meta = metadata();
+        assert!(evaluate_filter_with_context(
+            &ast,
+            &FilterContext {
+                tags: &tag_map,
+                metadata: Some(&meta),
+            }
+        ));
+    }
+
+    #[test]
+    fn test_metadata_missing_and_negated_string_match() {
+        let missing = parse_filter("meta:user").unwrap();
+        let not_user = parse_filter(r#"!(meta:user="Jane Doe")"#).unwrap();
+        let tag_map = tags(&[]);
+        let meta = metadata();
+        assert!(!evaluate_filter_with_context(
+            &missing,
+            &FilterContext {
+                tags: &tag_map,
+                metadata: None,
+            }
+        ));
+        assert!(!evaluate_filter_with_context(
+            &not_user,
+            &FilterContext {
+                tags: &tag_map,
+                metadata: Some(&meta),
+            }
+        ));
     }
 }

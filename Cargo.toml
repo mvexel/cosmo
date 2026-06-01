@@ -24,7 +24,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.147"
 serde_yaml = "0.9.34"
 tempfile = "3.20"
-time = { version = "0.3.37", features = ["formatting"] }
+time = { version = "0.3.37", features = ["formatting", "parsing"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 cel = "0.11"

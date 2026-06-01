@@ -1,6 +1,7 @@
 use crate::dsl::{parse_filter, FilterAst};
 use crate::expr::{compile_cel, CelProgram};
 use crate::mapping::{Mapping, MappingConfig};
+use crate::metadata::MetadataField;
 use anyhow::Context;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
@@ -88,9 +89,8 @@ impl FiltersConfig {
         let mut compiled_tables = HashMap::new();
         for (table_name, table_config) in raw_tables {
             let filter = match &table_config.filter {
-                FilterInput::Dsl(s) => parse_filter(s).map_err(|e| {
-                    anyhow::anyhow!("Filter error in table '{table_name}': {e}")
-                })?,
+                FilterInput::Dsl(s) => parse_filter(s)
+                    .map_err(|e| anyhow::anyhow!("Filter error in table '{table_name}': {e}"))?,
                 FilterInput::EmptyMap(map) if map.is_empty() => FilterAst::True,
                 FilterInput::EmptyMap(_) => {
                     anyhow::bail!(
@@ -439,6 +439,55 @@ pub struct CompiledConfig {
     pub mappings: HashMap<String, Mapping>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserMetadataReferences {
+    pub user_name: bool,
+    pub uid: bool,
+}
+
+impl UserMetadataReferences {
+    fn include_field(&mut self, field: MetadataField) {
+        match field {
+            MetadataField::User => self.user_name = true,
+            MetadataField::Uid => self.uid = true,
+            _ => {}
+        }
+    }
+
+    fn include_all_meta(&mut self) {
+        self.user_name = true;
+        self.uid = true;
+    }
+}
+
+impl CompiledConfig {
+    pub fn user_metadata_references(&self) -> UserMetadataReferences {
+        let mut usage = UserMetadataReferences::default();
+
+        for table in self.tables.values() {
+            if table.filter.uses_metadata_field(MetadataField::User) {
+                usage.user_name = true;
+            }
+            if table.filter.uses_metadata_field(MetadataField::Uid) {
+                usage.uid = true;
+            }
+            for column in &table.columns {
+                match &column.source {
+                    ColumnSource::Meta(field) => {
+                        if let Ok(field) = MetadataField::parse(field) {
+                            usage.include_field(field);
+                        }
+                    }
+                    ColumnSource::AllMeta => usage.include_all_meta(),
+                    _ => {}
+                }
+            }
+        }
+
+        usage
+    }
+}
+
 pub struct CompiledTable {
     #[allow(dead_code)]
     pub name: String,
@@ -486,6 +535,7 @@ fn parse_column_source(
         return Ok(ColumnSource::Tag(tag.to_string()));
     }
     if let Some(field) = source.strip_prefix("meta:") {
+        crate::metadata::MetadataField::parse(field).map_err(anyhow::Error::msg)?;
         return Ok(ColumnSource::Meta(field.to_string()));
     }
     if let Some(name) = source.strip_prefix("mapping:") {
@@ -837,6 +887,60 @@ table:
         );
     }
 
+    #[test]
+    fn metadata_column_source_rejects_unknown_field() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "amenity"
+  columns:
+    - name: unknown
+      source: "meta:unknown"
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap();
+
+        let err = match config.compile() {
+            Ok(_) => panic!("expected unknown metadata field to be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("Unknown metadata field 'meta:unknown'"));
+        assert!(err.contains("supported fields"));
+    }
+
+    #[test]
+    fn compiled_config_detects_user_metadata_filter_references() {
+        let yaml = r#"
+table:
+  name: edits
+  filter: 'meta:user = "mvexel"'
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+
+        let usage = config.user_metadata_references();
+        assert!(usage.user_name);
+        assert!(!usage.uid);
+    }
+
+    #[test]
+    fn compiled_config_detects_user_metadata_column_references() {
+        let yaml = r#"
+table:
+  name: edits
+  filter: "amenity"
+  columns:
+    - name: uid
+      source: meta:uid
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+
+        let usage = config.user_metadata_references();
+        assert!(!usage.user_name);
+        assert!(usage.uid);
+    }
     #[test]
     fn way_polygon_is_rejected_for_open_ways() {
         let yaml = r#"

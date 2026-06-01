@@ -22,6 +22,7 @@
 | D9 | 3-pass when relations enabled | Pass 0 scans relations for way IDs. Pass 1 collects only those ways. No extra cost when relations disabled. | **ADR-001** |
 | D10 | MapRoulette as a new output format, not a flag on GeoJSONL | Semantics differ: RS prefix + FeatureCollection wrapper per line (RFC 7464). Separate sink is cleaner than conditional logic in GeoJSONL. | No |
 | D11 | Default dense temp caches to disk-backed `/var/tmp` and check free space before mmap | tmpfs-backed `/tmp` can SIGBUS on page fault when dense cache exceeds tmpfs capacity. Fail fast with an actionable error instead of crashing. | No |
+| D12 | Keep the hand-written filter DSL lexer/parser for metadata filters | Metadata predicates still fit the current DSL shape (identifiers, quoted strings, typed comparisons, boolean operators). Replacing the parser now would mix a behavior change with a parser migration; reassess if the DSL adds functions, regexes, date math, arithmetic, or broader namespaces. | No |
 
 ## Commit Log
 
