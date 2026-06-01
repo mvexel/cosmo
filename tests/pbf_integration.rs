@@ -511,6 +511,121 @@ table:
     }
 }
 
+#[test]
+fn metadata_timestamp_filter_excludes_future_features() {
+    let filters = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant & meta:timestamp>"2999-01-01T00:00:00Z"'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let lines = run_cosmo(filters);
+    assert!(
+        lines.is_empty(),
+        "future timestamp filter should exclude all fixture restaurants"
+    );
+}
+
+#[test]
+fn metadata_version_filter_keeps_versioned_features() {
+    let baseline = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let filtered = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant & meta:version>=1'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let baseline_lines = run_cosmo(baseline);
+    let filtered_lines = run_cosmo(filtered);
+    assert!(
+        !baseline_lines.is_empty(),
+        "fixture should contain restaurant amenities"
+    );
+    assert_eq!(filtered_lines.len(), baseline_lines.len());
+}
+
+#[test]
+fn metadata_type_filter_matches_nodes() {
+    let baseline = r#"
+table:
+  name: trees
+  filter: 'natural=tree'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let filtered = r#"
+table:
+  name: trees
+  filter: 'natural=tree & meta:type=node'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    assert_eq!(run_cosmo(&filtered).len(), run_cosmo(baseline).len());
+}
+
+#[test]
+fn metadata_visible_filter_matches_visible_fixture_features() {
+    let filters = r#"
+table:
+  name: trees
+  filter: 'natural=tree & meta:visible=true'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: visible
+      source: meta:visible
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+    assert!(!features.is_empty(), "fixture should contain visible trees");
+    assert!(features.iter().all(|feature| {
+        get_property(feature, "visible") == Some(&Value::String("true".to_string()))
+    }));
+}
+
 // =============================================================================
 // DSL Filter Tests
 // =============================================================================

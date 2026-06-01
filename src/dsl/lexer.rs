@@ -4,8 +4,9 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Identifiers and values
-    Ident(String), // tag key or value
-    Number(f64),   // numeric literal
+    Ident(String),  // tag key or value
+    Number(f64),    // numeric literal
+    String(String), // quoted string literal
 
     // Operators
     Eq, // =
@@ -61,6 +62,10 @@ impl<'a> Lexer<'a> {
 
         if let Some(token) = self.operator_token(ch) {
             return Ok(Some(token));
+        }
+
+        if ch == '"' {
+            return self.lex_string().map(Some);
         }
 
         if ch.is_ascii_digit() || self.starts_negative_number() {
@@ -175,6 +180,38 @@ impl<'a> Lexer<'a> {
             .map_err(|err| format!("Lexer error at '{value}': invalid number: {err}"))
     }
 
+    fn lex_string(&mut self) -> Result<Token, String> {
+        self.pos += 1; // opening quote
+        let mut value = String::new();
+
+        while let Some(ch) = self.peek_char() {
+            self.pos += ch.len_utf8();
+            match ch {
+                '"' => return Ok(Token::String(value)),
+                '\\' => {
+                    let Some(escaped) = self.peek_char() else {
+                        return Err("Lexer error: unterminated string literal".to_string());
+                    };
+                    self.pos += escaped.len_utf8();
+                    match escaped {
+                        '"' => value.push('"'),
+                        '\\' => value.push('\\'),
+                        'n' => value.push('\n'),
+                        't' => value.push('\t'),
+                        other => {
+                            return Err(format!(
+                                "Lexer error: unsupported escape sequence '\\{other}'"
+                            ));
+                        }
+                    }
+                }
+                other => value.push(other),
+            }
+        }
+
+        Err("Lexer error: unterminated string literal".to_string())
+    }
+
     fn lex_ident(&mut self) -> Token {
         let start = self.pos;
 
@@ -261,6 +298,34 @@ mod tests {
                 Token::Ident("lanes".into()),
                 Token::Ge,
                 Token::Number(2.0),
+                Token::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quoted_string_token() {
+        let tokens = tokenize(r#"meta:user="Jane Doe""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Ident("meta:user".into()),
+                Token::Eq,
+                Token::String("Jane Doe".into()),
+                Token::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quoted_string_escapes() {
+        let tokens = tokenize(r#"name="Bob \"The Builder\"""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Ident("name".into()),
+                Token::Eq,
+                Token::String("Bob \"The Builder\"".into()),
                 Token::Eof,
             ]
         );

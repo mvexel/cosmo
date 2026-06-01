@@ -300,6 +300,48 @@ filter: {}
 
 **Note:** Empty filters match ALL features including untagged nodes (way vertices). This creates very large output files where 70-80% of features typically have empty tags. For most use cases, filter by specific tags instead.
 
+### Metadata Filtering
+
+In addition to filtering by OSM tags, you can filter by OSM metadata fields using the `meta:` prefix:
+
+| Field | Kind | Examples |
+|---|---|---|
+| `meta:id` | integer | `meta:id=123`, `meta:id>1000` |
+| `meta:type` | string | `meta:type=node`, `meta:type=way|relation` |
+| `meta:visible` | boolean | `meta:visible=true` |
+| `meta:version` | integer | `meta:version>=2` |
+| `meta:changeset` | integer | `meta:changeset>100000000` |
+| `meta:timestamp` | timestamp | `meta:timestamp>="2024-01-01"` |
+| `meta:uid` | integer | `meta:uid=12345` |
+| `meta:user` | string | `meta:user="Jane Doe"` |
+
+Rules:
+
+- `meta:<field>` checks existence (e.g., `meta:version` matches elements that have version info).
+- `!meta:<field>` matches elements missing the field.
+- `=` uses existing exact, wildcard, glob, and `|` alternative matching.
+- Quoted values are supported for both tag and metadata equality.
+- `<`, `<=`, `>`, `>=`, and `!=` work for integer fields and `meta:timestamp`.
+- String/boolean inequality uses negation: `!(meta:user="Jane Doe")`, `!(meta:visible=true)`.
+- Timestamp values must be quoted RFC3339 date-times or `YYYY-MM-DD`; date-only means midnight UTC.
+
+```yaml
+# Only features edited on or after 2024
+filter: 'meta:timestamp >= "2024-01-01"'
+
+# Buildings with version 3+
+filter: 'building & meta:version >= 3'
+
+# Exclude deleted/invisible features
+filter: 'meta:visible=true'
+
+# Specific user's edits to restaurants
+filter: 'amenity=restaurant & meta:user="Jane Doe"'
+
+# Ways and relations only (exclude nodes)
+filter: 'meta:type=way|relation'
+```
+
 ## Column Sources
 
 Columns define what data is extracted from OSM features and how it's formatted in the output. The `source` field specifies where the data comes from.
@@ -338,6 +380,10 @@ columns:
   - name: osm_id
     source: meta:id
     type: integer
+
+  # Element type (node, way, or relation)
+  - name: osm_type
+    source: meta:type
 
   # Element visibility flag
   - name: visible
@@ -565,6 +611,7 @@ CEL expressions have access to two variables:
 - `tags`: A map (dictionary) of all OSM tags (keys and values are strings)
 - `meta`: A map of metadata fields with the following keys:
   - `id` - OSM element ID (string)
+  - `type` - Element type: `node`, `way`, or `relation` (string)
   - `version` - Version number (string, may be absent)
   - `timestamp` - Last edit timestamp in ISO 8601 format (string, may be absent)
 
@@ -1050,7 +1097,7 @@ filter: '!(highway=residential)'
 
 ### Limited Metadata in CEL Context
 
-Only `id`, `version`, and `timestamp` are available in the CEL `meta` variable. Other metadata fields (`uid`, `user`, `changeset`, `visible`) are not included. Use `meta:` column sources instead of CEL expressions for metadata fields if possible.
+Only `id`, `type`, `version`, and `timestamp` are available in the CEL `meta` variable. Other metadata fields (`uid`, `user`, `changeset`, `visible`) are not included. Use `meta:` column sources instead of CEL expressions for metadata fields if possible.
 
 ### Limited String Functions
 

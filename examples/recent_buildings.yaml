@@ -1,0 +1,26 @@
+# Buildings edited on or after 2024-01-01.
+table:
+  name: recent_buildings
+  filter: 'building & meta:timestamp >= "2024-01-01"'
+  geometry:
+    node: false
+    way: false
+    closed_way: polygon
+    relation: true
+  columns:
+    - name: name
+      source: tag:name
+    - name: building_type
+      source: tag:building
+    - name: edited_at
+      source: meta:timestamp
+    - name: version
+      source: meta:version
+      type: integer
+    - name: editor
+      source: meta:user
+    - name: osm_type
+      source: meta:type
+    - name: osm_id
+      source: meta:id
+      type: integer

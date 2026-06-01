@@ -13,11 +13,12 @@ use std::sync::Arc;
 use crate::config::{
     ClosedWayMode, ColumnSource, CompiledColumn, CompiledConfig, RuntimeConfig, WayGeometryMode,
 };
-use crate::dsl::evaluate_filter;
+use crate::dsl::{evaluate_filter, evaluate_filter_with_context, FilterContext};
 use crate::expr::{cel_value_to_string, evaluate_cel};
 use crate::mapping::evaluate_mapping;
 use crate::metadata::{
-    build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value, MetadataFields,
+    build_metadata_from_dense_info, build_metadata_from_info, extract_meta_value,
+    format_timestamp_millis, ElementType, MetadataAvailability, MetadataFields,
 };
 use crate::sinks::{ColumnType, ColumnValue, FeatureRow};
 use crate::storage::NodeStoreReader;
@@ -73,6 +74,7 @@ pub struct StandardProcessor {
     pub runtime: Arc<RuntimeConfig>,
     pub node_store: Arc<NodeStoreReader>,
     pub way_store: Arc<WayStore>,
+    pub metadata_availability: Option<Arc<MetadataAvailability>>,
 }
 
 impl BlockProcessor for StandardProcessor {
@@ -83,6 +85,7 @@ impl BlockProcessor for StandardProcessor {
             &self.runtime,
             &self.node_store,
             &self.way_store,
+            self.metadata_availability.as_deref(),
         )
     }
 }
@@ -90,11 +93,17 @@ impl BlockProcessor for StandardProcessor {
 pub struct NodesOnlyProcessor {
     pub config: Arc<CompiledConfig>,
     pub runtime: Arc<RuntimeConfig>,
+    pub metadata_availability: Option<Arc<MetadataAvailability>>,
 }
 
 impl BlockProcessor for NodesOnlyProcessor {
     fn process_block(&self, block: PrimitiveBlock) -> Result<Vec<(String, FeatureRow)>> {
-        process_block_nodes_only_collect(block, &self.config, &self.runtime)
+        process_block_nodes_only_collect(
+            block,
+            &self.config,
+            &self.runtime,
+            self.metadata_availability.as_deref(),
+        )
     }
 }
 
@@ -103,7 +112,7 @@ pub fn build_feature_row(
     tags: &HashMap<String, String>,
     columns: &[CompiledColumn],
     runtime: &RuntimeConfig,
-    metadata: Option<MetadataFields>,
+    metadata: Option<&MetadataFields>,
     refs: Option<Vec<i64>>,
     config: &CompiledConfig,
 ) -> FeatureRow {
@@ -123,7 +132,7 @@ pub fn build_feature_row(
                 _ => ColumnValue::String(v.clone()),
             }),
             ColumnSource::Meta(key) => {
-                if let Some(m) = &metadata {
+                if let Some(m) = metadata {
                     extract_meta_value(key, Some(m)).map(ColumnValue::String)
                 } else {
                     None
@@ -133,11 +142,12 @@ pub fn build_feature_row(
                 serde_json::to_value(tags).unwrap_or(Value::Null),
             )),
             ColumnSource::AllMeta => {
-                if let Some(m) = &metadata {
+                if let Some(m) = metadata {
                     let json_meta = serde_json::json!({
                         "id": m.id,
+                        "type": m.element_type.as_str(),
                         "version": m.version,
-                        "timestamp": m.timestamp,
+                        "timestamp": m.timestamp_millis.and_then(format_timestamp_millis),
                         "user": m.user,
                         "uid": m.uid,
                         "changeset": m.changeset,
@@ -157,16 +167,17 @@ pub fn build_feature_row(
                 .and_then(|m| evaluate_mapping(m, tags))
                 .map(ColumnValue::String),
             ColumnSource::Cel(program) => {
-                match &metadata {
+                match metadata {
                     Some(m) => {
                         // TODO: Add metadata to CEL context properly if needed beyond tags
                         let mut meta_map = HashMap::new();
                         meta_map.insert("id".to_string(), m.id.to_string());
+                        meta_map.insert("type".to_string(), m.element_type.as_str().to_string());
                         if let Some(v) = &m.version {
                             meta_map.insert("version".to_string(), v.to_string());
                         }
-                        if let Some(t) = &m.timestamp {
-                            meta_map.insert("timestamp".to_string(), t.clone());
+                        if let Some(t) = m.timestamp_millis.and_then(format_timestamp_millis) {
+                            meta_map.insert("timestamp".to_string(), t);
                         }
 
                         let ctx = crate::expr::CelContext {
@@ -217,6 +228,50 @@ pub fn build_feature_row(
         columns: column_values,
         extras,
     }
+}
+
+fn table_filter_matches(
+    filter: &crate::dsl::FilterAst,
+    tags: &HashMap<String, String>,
+    metadata: Option<&MetadataFields>,
+) -> bool {
+    if filter.uses_metadata() {
+        evaluate_filter_with_context(filter, &FilterContext { tags, metadata })
+    } else {
+        evaluate_filter(filter, tags)
+    }
+}
+
+fn columns_need_metadata(columns: &[CompiledColumn]) -> bool {
+    columns.iter().any(|col| {
+        matches!(
+            col.source,
+            ColumnSource::Meta(_) | ColumnSource::AllMeta | ColumnSource::Cel(_)
+        )
+    })
+}
+
+fn observe_metadata(
+    metadata_availability: Option<&MetadataAvailability>,
+    metadata: Option<&MetadataFields>,
+) {
+    if let Some(metadata_availability) = metadata_availability {
+        metadata_availability.record(metadata);
+    }
+}
+
+fn get_or_insert_observed_metadata<'a>(
+    metadata: &'a mut Option<MetadataFields>,
+    metadata_availability: Option<&MetadataAvailability>,
+    build: impl FnOnce() -> MetadataFields,
+) -> &'a MetadataFields {
+    if metadata.is_none() {
+        let value = build();
+        observe_metadata(metadata_availability, Some(&value));
+        *metadata = Some(value);
+    }
+
+    metadata.as_ref().expect("metadata was just inserted")
 }
 
 pub fn build_way_geometry(
@@ -463,6 +518,7 @@ pub fn process_block_collect(
     runtime: &RuntimeConfig,
     node_store: &NodeStoreReader,
     way_store: &WayStore,
+    metadata_availability: Option<&MetadataAvailability>,
 ) -> Result<Vec<(String, FeatureRow)>> {
     let mut rows = Vec::new();
 
@@ -470,18 +526,50 @@ pub fn process_block_collect(
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
+                let mut metadata: Option<MetadataFields> = None;
 
                 // Evaluate ALL table filters
                 for (table_name, table) in &config.tables {
-                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    if !table.geometry.node {
+                        continue;
+                    }
+
+                    let matches_filter = if table.filter.uses_metadata() {
+                        let metadata_ref = get_or_insert_observed_metadata(
+                            &mut metadata,
+                            metadata_availability,
+                            || build_metadata_from_info(node.id(), ElementType::Node, &node.info()),
+                        );
+                        table_filter_matches(&table.filter, &tag_map, Some(metadata_ref))
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if matches_filter {
                         let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
                         if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let row_metadata = if columns_need_metadata(&table.columns) {
+                                let metadata_ref = get_or_insert_observed_metadata(
+                                    &mut metadata,
+                                    metadata_availability,
+                                    || {
+                                        build_metadata_from_info(
+                                            node.id(),
+                                            ElementType::Node,
+                                            &node.info(),
+                                        )
+                                    },
+                                );
+                                Some(metadata_ref)
+                            } else {
+                                None
+                            };
                             let row = build_feature_row(
                                 geometry,
                                 &tag_map,
                                 &table.columns,
                                 runtime,
-                                Some(build_metadata_from_info(node.id(), &node.info())),
+                                row_metadata,
                                 None,
                                 config,
                             );
@@ -492,20 +580,48 @@ pub fn process_block_collect(
             }
             Element::DenseNode(node) => {
                 let tag_map = build_tag_map(node.tags());
+                let mut metadata: Option<MetadataFields> = None;
+                let mut metadata_loaded = false;
 
                 for (table_name, table) in &config.tables {
-                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                            let metadata = node
+                    if !table.geometry.node {
+                        continue;
+                    }
+
+                    let matches_filter = if table.filter.uses_metadata() {
+                        if !metadata_loaded {
+                            metadata = node
                                 .info()
                                 .map(|info| build_metadata_from_dense_info(node.id(), info));
+                            observe_metadata(metadata_availability, metadata.as_ref());
+                            metadata_loaded = true;
+                        }
+                        table_filter_matches(&table.filter, &tag_map, metadata.as_ref())
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if matches_filter {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let row_metadata = if columns_need_metadata(&table.columns) {
+                                if !metadata_loaded {
+                                    metadata = node.info().map(|info| {
+                                        build_metadata_from_dense_info(node.id(), info)
+                                    });
+                                    observe_metadata(metadata_availability, metadata.as_ref());
+                                    metadata_loaded = true;
+                                }
+                                metadata.as_ref()
+                            } else {
+                                None
+                            };
                             let row = build_feature_row(
                                 geometry,
                                 &tag_map,
                                 &table.columns,
                                 runtime,
-                                metadata,
+                                row_metadata,
                                 None,
                                 config,
                             );
@@ -516,52 +632,86 @@ pub fn process_block_collect(
             }
             Element::Way(way) => {
                 let tag_map = build_tag_map(way.tags());
+                let mut metadata: Option<MetadataFields> = None;
 
                 for (table_name, table) in &config.tables {
-                    if table.geometry.processes_ways() && evaluate_filter(&table.filter, &tag_map) {
-                        let refs: Vec<i64> = way.refs().collect();
-                        let ref_count = refs.len();
-                        let coords: Vec<(f64, f64)> = refs
-                            .iter()
-                            .filter_map(|&id| node_store.get(id as u64))
-                            .collect();
+                    if !table.geometry.processes_ways() {
+                        continue;
+                    }
 
-                        if coords.len() < ref_count {
-                            static MISSING_NODE_WARNINGS: AtomicU64 = AtomicU64::new(0);
-                            let count = MISSING_NODE_WARNINGS.fetch_add(1, Ordering::Relaxed);
-                            let missing = ref_count - coords.len();
-                            if count < 5 {
-                                tracing::warn!(
-                                    "Way {} has {}/{} missing node references",
-                                    way.id(),
-                                    missing,
-                                    ref_count
-                                );
-                            } else if count == 5 {
-                                tracing::warn!(
-                                    "Way {} has {}/{} missing node references (suppressing further warnings)",
-                                    way.id(), missing, ref_count
-                                );
-                            }
+                    let matches_filter = if table.filter.uses_metadata() {
+                        let metadata_ref = get_or_insert_observed_metadata(
+                            &mut metadata,
+                            metadata_availability,
+                            || build_metadata_from_info(way.id(), ElementType::Way, &way.info()),
+                        );
+                        table_filter_matches(&table.filter, &tag_map, Some(metadata_ref))
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if !matches_filter {
+                        continue;
+                    }
+
+                    let refs: Vec<i64> = way.refs().collect();
+                    let ref_count = refs.len();
+                    let coords: Vec<(f64, f64)> = refs
+                        .iter()
+                        .filter_map(|&id| node_store.get(id as u64))
+                        .collect();
+
+                    if coords.len() < ref_count {
+                        static MISSING_NODE_WARNINGS: AtomicU64 = AtomicU64::new(0);
+                        let count = MISSING_NODE_WARNINGS.fetch_add(1, Ordering::Relaxed);
+                        let missing = ref_count - coords.len();
+                        if count < 5 {
+                            tracing::warn!(
+                                "Way {} has {}/{} missing node references",
+                                way.id(),
+                                missing,
+                                ref_count
+                            );
+                        } else if count == 5 {
+                            tracing::warn!(
+                                "Way {} has {}/{} missing node references (suppressing further warnings)",
+                                way.id(), missing, ref_count
+                            );
                         }
-                        if coords.len() >= 2 {
-                            let first_coord = coords[0];
-                            let line_string = LineString::from(coords);
-                            if let Some(geometry) =
-                                build_way_geometry(&table.geometry, line_string, first_coord)
-                            {
-                                if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                                    let row = build_feature_row(
-                                        geometry,
-                                        &tag_map,
-                                        &table.columns,
-                                        runtime,
-                                        Some(build_metadata_from_info(way.id(), &way.info())),
-                                        Some(refs),
-                                        config,
+                    }
+                    if coords.len() >= 2 {
+                        let first_coord = coords[0];
+                        let line_string = LineString::from(coords);
+                        if let Some(geometry) =
+                            build_way_geometry(&table.geometry, line_string, first_coord)
+                        {
+                            if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                                let row_metadata = if columns_need_metadata(&table.columns) {
+                                    let metadata_ref = get_or_insert_observed_metadata(
+                                        &mut metadata,
+                                        metadata_availability,
+                                        || {
+                                            build_metadata_from_info(
+                                                way.id(),
+                                                ElementType::Way,
+                                                &way.info(),
+                                            )
+                                        },
                                     );
-                                    rows.push((table_name.clone(), row));
-                                }
+                                    Some(metadata_ref)
+                                } else {
+                                    None
+                                };
+                                let row = build_feature_row(
+                                    geometry,
+                                    &tag_map,
+                                    &table.columns,
+                                    runtime,
+                                    row_metadata,
+                                    Some(refs),
+                                    config,
+                                );
+                                rows.push((table_name.clone(), row));
                             }
                         }
                     }
@@ -576,24 +726,62 @@ pub fn process_block_collect(
                     continue;
                 }
 
+                let mut metadata: Option<MetadataFields> = None;
                 for (table_name, table) in &config.tables {
-                    if table.geometry.relation && evaluate_filter(&table.filter, &tag_map) {
-                        if let Some(geometry) = build_relation_geometry(&rel, node_store, way_store)
-                        {
-                            if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                                let member_ids: Vec<i64> =
-                                    rel.members().map(|m| m.member_id).collect();
-                                let row = build_feature_row(
-                                    geometry,
-                                    &tag_map,
-                                    &table.columns,
-                                    runtime,
-                                    Some(build_metadata_from_info(rel.id(), &rel.info())),
-                                    Some(member_ids),
-                                    config,
+                    if !table.geometry.relation {
+                        continue;
+                    }
+
+                    let matches_filter = if table.filter.uses_metadata() {
+                        let metadata_ref = get_or_insert_observed_metadata(
+                            &mut metadata,
+                            metadata_availability,
+                            || {
+                                build_metadata_from_info(
+                                    rel.id(),
+                                    ElementType::Relation,
+                                    &rel.info(),
+                                )
+                            },
+                        );
+                        table_filter_matches(&table.filter, &tag_map, Some(metadata_ref))
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if !matches_filter {
+                        continue;
+                    }
+
+                    if let Some(geometry) = build_relation_geometry(&rel, node_store, way_store) {
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let member_ids: Vec<i64> = rel.members().map(|m| m.member_id).collect();
+                            let row_metadata = if columns_need_metadata(&table.columns) {
+                                let metadata_ref = get_or_insert_observed_metadata(
+                                    &mut metadata,
+                                    metadata_availability,
+                                    || {
+                                        build_metadata_from_info(
+                                            rel.id(),
+                                            ElementType::Relation,
+                                            &rel.info(),
+                                        )
+                                    },
                                 );
-                                rows.push((table_name.clone(), row));
-                            }
+                                Some(metadata_ref)
+                            } else {
+                                None
+                            };
+                            let row = build_feature_row(
+                                geometry,
+                                &tag_map,
+                                &table.columns,
+                                runtime,
+                                row_metadata,
+                                Some(member_ids),
+                                config,
+                            );
+                            rows.push((table_name.clone(), row));
                         }
                     }
                 }
@@ -608,6 +796,7 @@ pub fn process_block_nodes_only_collect(
     block: PrimitiveBlock,
     config: &CompiledConfig,
     runtime: &RuntimeConfig,
+    metadata_availability: Option<&MetadataAvailability>,
 ) -> Result<Vec<(String, FeatureRow)>> {
     let mut rows = Vec::new();
 
@@ -615,17 +804,49 @@ pub fn process_block_nodes_only_collect(
         match element {
             Element::Node(node) => {
                 let tag_map = build_tag_map(node.tags());
+                let mut metadata: Option<MetadataFields> = None;
 
                 for (table_name, table) in &config.tables {
-                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
+                    if !table.geometry.node {
+                        continue;
+                    }
+
+                    let matches_filter = if table.filter.uses_metadata() {
+                        let metadata_ref = get_or_insert_observed_metadata(
+                            &mut metadata,
+                            metadata_availability,
+                            || build_metadata_from_info(node.id(), ElementType::Node, &node.info()),
+                        );
+                        table_filter_matches(&table.filter, &tag_map, Some(metadata_ref))
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if matches_filter {
                         let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
                         if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let row_metadata = if columns_need_metadata(&table.columns) {
+                                let metadata_ref = get_or_insert_observed_metadata(
+                                    &mut metadata,
+                                    metadata_availability,
+                                    || {
+                                        build_metadata_from_info(
+                                            node.id(),
+                                            ElementType::Node,
+                                            &node.info(),
+                                        )
+                                    },
+                                );
+                                Some(metadata_ref)
+                            } else {
+                                None
+                            };
                             let row = build_feature_row(
                                 geometry,
                                 &tag_map,
                                 &table.columns,
                                 runtime,
-                                Some(build_metadata_from_info(node.id(), &node.info())),
+                                row_metadata,
                                 None,
                                 config,
                             );
@@ -636,20 +857,48 @@ pub fn process_block_nodes_only_collect(
             }
             Element::DenseNode(node) => {
                 let tag_map = build_tag_map(node.tags());
+                let mut metadata: Option<MetadataFields> = None;
+                let mut metadata_loaded = false;
 
                 for (table_name, table) in &config.tables {
-                    if table.geometry.node && evaluate_filter(&table.filter, &tag_map) {
-                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
-                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
-                            let metadata = node
+                    if !table.geometry.node {
+                        continue;
+                    }
+
+                    let matches_filter = if table.filter.uses_metadata() {
+                        if !metadata_loaded {
+                            metadata = node
                                 .info()
                                 .map(|info| build_metadata_from_dense_info(node.id(), info));
+                            observe_metadata(metadata_availability, metadata.as_ref());
+                            metadata_loaded = true;
+                        }
+                        table_filter_matches(&table.filter, &tag_map, metadata.as_ref())
+                    } else {
+                        table_filter_matches(&table.filter, &tag_map, None)
+                    };
+
+                    if matches_filter {
+                        let geometry = Geometry::Point(Point::new(node.lon(), node.lat()));
+                        if geometry_intersects_bbox(&geometry, runtime.bbox) {
+                            let row_metadata = if columns_need_metadata(&table.columns) {
+                                if !metadata_loaded {
+                                    metadata = node.info().map(|info| {
+                                        build_metadata_from_dense_info(node.id(), info)
+                                    });
+                                    observe_metadata(metadata_availability, metadata.as_ref());
+                                    metadata_loaded = true;
+                                }
+                                metadata.as_ref()
+                            } else {
+                                None
+                            };
                             let row = build_feature_row(
                                 geometry,
                                 &tag_map,
                                 &table.columns,
                                 runtime,
-                                metadata,
+                                row_metadata,
                                 None,
                                 config,
                             );
@@ -792,10 +1041,11 @@ mod tests {
         }];
         let metadata = MetadataFields {
             id: 1,
+            element_type: ElementType::Node,
             visible: Some(true),
             version: Some(1),
             changeset: Some(2),
-            timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            timestamp_millis: Some(1_704_067_200_000),
             uid: Some(3),
             user: Some("tester".to_string()),
         };
@@ -818,7 +1068,7 @@ mod tests {
             &HashMap::new(),
             &columns,
             &RuntimeConfig::default(),
-            Some(metadata),
+            Some(&metadata),
             None,
             &config,
         );
