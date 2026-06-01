@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::config::{CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig};
+use crate::config::{
+    CompiledConfig, CompiledTable, NodeCacheMode, RuntimeConfig, UserMetadataReferences,
+};
+use crate::metadata::{MetadataAvailability, MetadataAvailabilitySnapshot};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
 use crate::sinks::{
     ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
@@ -307,9 +310,7 @@ pub fn init_sinks(
             .with_context(|| format!("Failed to create output directory: {output_dir:?}"))?;
         tracing::info!("Created output directory: {:?}", output_dir);
     } else if !output_dir.is_dir() {
-        anyhow::bail!(
-            "Output path exists but is not a directory: {output_dir:?}"
-        );
+        anyhow::bail!("Output path exists but is not a directory: {output_dir:?}");
     }
 
     let mut sinks = HashMap::new();
@@ -383,10 +384,7 @@ pub fn needs_node_store_compiled(config: &CompiledConfig) -> bool {
 }
 
 pub fn needs_way_store(config: &CompiledConfig) -> bool {
-    config
-        .tables
-        .values()
-        .any(|table| table.geometry.relation)
+    config.tables.values().any(|table| table.geometry.relation)
 }
 
 /// Pass 0: Scan relations to collect the set of member way IDs that will be
@@ -411,8 +409,7 @@ pub fn pass0_scan_relations(path: &Path) -> Result<HashSet<i64>> {
                         if let Element::Relation(rel) = element {
                             let mut is_polygon_type = false;
                             for (key, value) in rel.tags() {
-                                if key == "type"
-                                    && (value == "multipolygon" || value == "boundary")
+                                if key == "type" && (value == "multipolygon" || value == "boundary")
                                 {
                                     is_polygon_type = true;
                                     break;
@@ -570,9 +567,8 @@ pub fn pass1_index_nodes(
                     }
 
                     if !node_batch.is_empty() {
-                        tx.send(node_batch).map_err(|err| {
-                            anyhow!("Pipeline: Failed to send node batch: {err}")
-                        })?;
+                        tx.send(node_batch)
+                            .map_err(|err| anyhow!("Pipeline: Failed to send node batch: {err}"))?;
                     }
                     Ok(())
                 }
@@ -727,12 +723,14 @@ pub fn pass2_process(
     node_store: Arc<NodeStoreReader>,
     way_store: Arc<WayStore>,
     sinks: SinkMap,
+    metadata_availability: Option<Arc<MetadataAvailability>>,
 ) -> Result<HashMap<String, u64>> {
     let processor = Arc::new(StandardProcessor {
         config,
         runtime,
         node_store,
         way_store,
+        metadata_availability,
     });
     run_pass(path, processor, sinks, "Pass 2/2: blocks")
 }
@@ -742,9 +740,52 @@ pub fn pass_nodes_only(
     config: Arc<CompiledConfig>,
     runtime: Arc<RuntimeConfig>,
     sinks: SinkMap,
+    metadata_availability: Option<Arc<MetadataAvailability>>,
 ) -> Result<HashMap<String, u64>> {
-    let processor = Arc::new(NodesOnlyProcessor { config, runtime });
+    let processor = Arc::new(NodesOnlyProcessor {
+        config,
+        runtime,
+        metadata_availability,
+    });
     run_pass(path, processor, sinks, "Single pass: blocks")
+}
+
+pub fn user_metadata_warning(
+    usage: UserMetadataReferences,
+    metadata: MetadataAvailabilitySnapshot,
+) -> Option<&'static str> {
+    if !usage.user_name && !usage.uid {
+        return None;
+    }
+
+    if metadata.inspected == 0 {
+        return None;
+    }
+
+    if metadata.with_timestamp == 0
+        && metadata.with_user_name == 0
+        && metadata.with_nonzero_uid == 0
+    {
+        return Some(
+            "Filter/output references user metadata, but this PBF appears to have no element metadata. Filters on meta:user or meta:uid will match nothing.",
+        );
+    }
+
+    match (
+        usage.user_name && metadata.has_stripped_user_names(),
+        usage.uid && metadata.has_stripped_user_ids(),
+    ) {
+        (true, true) => Some(
+            "Filter/output references meta:user and meta:uid, but this PBF appears to have user metadata stripped. Observed timestamps, but user names are empty and uids are 0; filters on meta:user or meta:uid will match nothing.",
+        ),
+        (true, false) => Some(
+            "Filter/output references meta:user, but this PBF appears to have user names stripped. Observed timestamps, but user names are empty; filters on meta:user will match nothing.",
+        ),
+        (false, true) => Some(
+            "Filter/output references meta:uid, but this PBF appears to have user ids stripped. Observed timestamps, but uids are 0; filters on meta:uid will match nothing.",
+        ),
+        (false, false) => None,
+    }
 }
 
 pub fn process_pbf(
@@ -755,8 +796,15 @@ pub fn process_pbf(
     sinks: SinkMap,
     needs_nodes: bool,
 ) -> Result<HashMap<String, u64>> {
+    let user_metadata_usage = config.user_metadata_references();
+    let metadata_availability = if user_metadata_usage.user_name || user_metadata_usage.uid {
+        Some(Arc::new(MetadataAvailability::default()))
+    } else {
+        None
+    };
+
     tracing::info!("Node cache required: {}", needs_nodes);
-    if needs_nodes {
+    let result = if needs_nodes {
         if verbose {
             if let Ok(metadata) = std::fs::metadata(&args.input) {
                 let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -858,20 +906,90 @@ pub fn process_pbf(
 
         tracing::info!("Pass 2: Processing elements (parallel)...");
         let way_store = Arc::new(way_store);
-        let result = pass2_process(&args.input, config, runtime, node_store, way_store, sinks)?;
-
-        // Temp file (if any) is cleaned up when node_store is dropped
-
-        Ok(result)
+        pass2_process(
+            &args.input,
+            config,
+            runtime,
+            node_store,
+            way_store,
+            sinks,
+            metadata_availability.clone(),
+        )?
     } else {
         tracing::info!("Single pass: Processing nodes (parallel)...");
-        pass_nodes_only(&args.input, config, runtime, sinks)
+        pass_nodes_only(
+            &args.input,
+            config,
+            runtime,
+            sinks,
+            metadata_availability.clone(),
+        )?
+    };
+
+    if let Some(stats) = metadata_availability.as_ref() {
+        if let Some(warning) = user_metadata_warning(user_metadata_usage, stats.snapshot()) {
+            tracing::warn!("{}", warning);
+        }
     }
+
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_metadata_warning_mentions_stripped_names_when_user_filter_depends_on_them() {
+        let usage = UserMetadataReferences {
+            user_name: true,
+            uid: false,
+        };
+        let metadata = MetadataAvailabilitySnapshot {
+            inspected: 10,
+            with_timestamp: 10,
+            with_user_name: 0,
+            with_nonzero_uid: 10,
+        };
+
+        let warning = user_metadata_warning(usage, metadata).unwrap();
+
+        assert!(warning.contains("meta:user"));
+        assert!(warning.contains("user names are empty"));
+    }
+
+    #[test]
+    fn user_metadata_warning_is_suppressed_without_user_metadata_references() {
+        let warning = user_metadata_warning(
+            UserMetadataReferences::default(),
+            MetadataAvailabilitySnapshot {
+                inspected: 10,
+                with_timestamp: 10,
+                with_user_name: 0,
+                with_nonzero_uid: 0,
+            },
+        );
+
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn user_metadata_warning_is_suppressed_when_requested_user_names_are_present() {
+        let warning = user_metadata_warning(
+            UserMetadataReferences {
+                user_name: true,
+                uid: false,
+            },
+            MetadataAvailabilitySnapshot {
+                inspected: 10,
+                with_timestamp: 0,
+                with_user_name: 10,
+                with_nonzero_uid: 10,
+            },
+        );
+
+        assert!(warning.is_none());
+    }
 
     #[test]
     fn parse_bbox_valid_utah() {
