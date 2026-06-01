@@ -20,7 +20,7 @@ use crate::sinks::{
 use crate::storage::{NodeStoreReader, NodeStoreWriter};
 use crate::utils::ProgressCounter;
 
-pub type SinkMap = HashMap<String, Arc<Mutex<Box<dyn DataSink + Send>>>>;
+pub type SinkMap = HashMap<String, Arc<Mutex<Box<dyn DataSink>>>>;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -230,7 +230,7 @@ pub fn init_sink(
     format: &OutputFormat,
     output: &Path,
     config: &CompiledConfig,
-) -> Result<Box<dyn DataSink + Send>> {
+) -> Result<Box<dyn DataSink>> {
     match format {
         OutputFormat::GeoJson => {
             if output == Path::new("-") {
@@ -325,7 +325,7 @@ pub fn init_sinks(
     for (table_name, table_config) in &config.tables {
         let file_path = output_dir.join(format!("{table_name}.{extension}"));
 
-        let sink: Box<dyn DataSink + Send> = match format {
+        let sink: Box<dyn DataSink> = match format {
             OutputFormat::GeoJson => Box::new(GeoJsonSink::new(&file_path)?),
             OutputFormat::GeoJsonl => Box::new(GeoJsonlSink::new(&file_path)?),
             OutputFormat::GeoParquet => {
