@@ -166,6 +166,10 @@ pub fn build_feature_row(
                 .get(name)
                 .and_then(|m| evaluate_mapping(m, tags))
                 .map(ColumnValue::String),
+            ColumnSource::ConstString(value) => Some(ColumnValue::String(value.clone())),
+            ColumnSource::ConstInteger(value) => Some(ColumnValue::Integer(*value)),
+            ColumnSource::ConstFloat(value) => Some(ColumnValue::Float(*value)),
+            ColumnSource::ConstJson(value) => Some(ColumnValue::Json(value.clone())),
             ColumnSource::Cel(program) => {
                 match metadata {
                     Some(m) => {

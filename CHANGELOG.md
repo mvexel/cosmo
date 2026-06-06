@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **MapRoulette output format** (`--format maproulette`): RFC 7464 line-by-line GeoJSON with record separator prefix and FeatureCollection wrapping, ready for direct upload to MapRoulette challenges.
 - **Multipolygon and boundary relation support** (`relation: true` in geometry config): assembles outer/inner way members into polygon/multipolygon geometries for `type=multipolygon` and `type=boundary` relations.
 - **3-pass architecture** for planet-scale relation processing: pass 0 scans relation member way IDs, pass 1 collects only those ways, pass 2 processes all elements. Skipped when no table enables relations.
+- **Constant column source** (`source: const:<value>`): emits typed literal values without compiling/evaluating CEL per feature.
 - Added example filter for MapRoulette challenges (`examples/maproulette/business-missing-phone.yml`).
 - Added example filter for building extraction with relations (`examples/buildings.yaml`).
 - Added `closed_way: false` support to exclude closed ways independently from open ways.

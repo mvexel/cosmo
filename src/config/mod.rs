@@ -101,7 +101,7 @@ impl FiltersConfig {
 
             let mut columns = Vec::new();
             for col in &table_config.columns {
-                let source = parse_column_source(&col.source, &mappings)?;
+                let source = parse_column_source(&col.source, col.col_type, &mappings)?;
                 columns.push(CompiledColumn {
                     name: col.name.clone(),
                     source,
@@ -510,6 +510,10 @@ pub enum ColumnSource {
     AllMeta,
     Refs,
     Mapping(String),
+    ConstString(String),
+    ConstInteger(i64),
+    ConstFloat(f64),
+    ConstJson(serde_json::Value),
     Cel(CelProgram),
 }
 
@@ -520,6 +524,7 @@ pub enum ColumnSource {
 /// Parse a column source string.
 fn parse_column_source(
     source: &str,
+    col_type: ColumnType,
     mappings: &HashMap<String, Mapping>,
 ) -> anyhow::Result<ColumnSource> {
     if source == "tags" {
@@ -538,6 +543,9 @@ fn parse_column_source(
         crate::metadata::MetadataField::parse(field).map_err(anyhow::Error::msg)?;
         return Ok(ColumnSource::Meta(field.to_string()));
     }
+    if let Some(value) = source.strip_prefix("const:") {
+        return parse_const_column_source(value, col_type);
+    }
     if let Some(name) = source.strip_prefix("mapping:") {
         if !mappings.contains_key(name) {
             return Err(anyhow::anyhow!("Unknown mapping: {name}"));
@@ -551,6 +559,23 @@ fn parse_column_source(
 
     // Default: treat as tag
     Ok(ColumnSource::Tag(source.to_string()))
+}
+
+fn parse_const_column_source(value: &str, col_type: ColumnType) -> anyhow::Result<ColumnSource> {
+    match col_type {
+        ColumnType::String => Ok(ColumnSource::ConstString(value.to_string())),
+        ColumnType::Integer => value
+            .parse::<i64>()
+            .map(ColumnSource::ConstInteger)
+            .with_context(|| format!("Invalid integer const value: {value}")),
+        ColumnType::Float => value
+            .parse::<f64>()
+            .map(ColumnSource::ConstFloat)
+            .with_context(|| format!("Invalid float const value: {value}")),
+        ColumnType::Json => serde_json::from_str(value)
+            .map(ColumnSource::ConstJson)
+            .with_context(|| format!("Invalid JSON const value: {value}")),
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -940,6 +965,68 @@ table:
         let usage = config.user_metadata_references();
         assert!(!usage.user_name);
         assert!(usage.uid);
+    }
+
+    #[test]
+    fn const_column_sources_compile_to_typed_values() {
+        let yaml = r#"
+table:
+  name: constants
+  filter: "amenity"
+  columns:
+    - name: source
+      source: const:cosmo
+      type: string
+    - name: count
+      source: const:42
+      type: integer
+    - name: ratio
+      source: const:3.5
+      type: float
+    - name: payload
+      source: 'const:{"kind":"fixed"}'
+      type: json
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+        let table = config.tables.get("constants").unwrap();
+
+        assert!(matches!(
+            table.columns[0].source,
+            ColumnSource::ConstString(ref value) if value == "cosmo"
+        ));
+        assert!(matches!(
+            table.columns[1].source,
+            ColumnSource::ConstInteger(42)
+        ));
+        assert!(matches!(
+            table.columns[2].source,
+            ColumnSource::ConstFloat(value) if value == 3.5
+        ));
+        assert!(matches!(
+            table.columns[3].source,
+            ColumnSource::ConstJson(ref value) if value["kind"] == "fixed"
+        ));
+    }
+
+    #[test]
+    fn invalid_const_value_fails_during_compile() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "amenity"
+  columns:
+    - name: count
+      source: const:not-an-int
+      type: integer
+"#;
+        let file = write_temp_yaml(yaml);
+        let err = match FiltersConfig::load(file.path()).unwrap().compile() {
+            Ok(_) => panic!("expected invalid const value to fail"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("Invalid integer const value"));
     }
     #[test]
     fn way_polygon_is_rejected_for_open_ways() {

@@ -626,6 +626,52 @@ table:
     }));
 }
 
+#[test]
+fn const_column_sources_emit_typed_values() {
+    let filters = r#"
+table:
+  name: trees
+  filter: 'natural=tree'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: source
+      source: const:cosmo
+      type: string
+    - name: priority
+      source: const:7
+      type: integer
+    - name: score
+      source: const:2.5
+      type: float
+    - name: payload
+      source: 'const:{"kind":"fixed"}'
+      type: json
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+    let first = features.first().expect("fixture should contain trees");
+
+    assert_eq!(
+        get_property(first, "source"),
+        Some(&Value::String("cosmo".to_string()))
+    );
+    assert_eq!(
+        get_property(first, "priority"),
+        Some(&Value::Number(7.into()))
+    );
+    assert_eq!(
+        get_property(first, "score").and_then(Value::as_f64),
+        Some(2.5)
+    );
+    assert_eq!(
+        get_property(first, "payload").and_then(|value| value.get("kind")),
+        Some(&Value::String("fixed".to_string()))
+    );
+}
+
 // =============================================================================
 // DSL Filter Tests
 // =============================================================================

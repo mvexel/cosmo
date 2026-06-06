@@ -171,6 +171,7 @@ Extract data from OSM features:
 | `meta` | All metadata as JSON | `source: meta` (requires `type: json`) |
 | `refs` | Way node IDs as JSON array | `source: refs` (requires `type: json`) |
 | `mapping:name` | Apply categorization mapping | `source: mapping:poi_class` |
+| `const:value` | Literal value typed by the column's `type` | `source: const:buildings-v1` |
 | `expr:CEL` | Compute with CEL expression | `source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'` |
 
 **Column Types:** `string` (default), `integer`, `float`, `json`

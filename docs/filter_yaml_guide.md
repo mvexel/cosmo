@@ -125,7 +125,7 @@ table:
       source: tag:opening_hours
 ```
 
-What we did here is add a handful of `column` declarations. Each `column` has a `name` and a `source`. In this example, the `source` specifies which OSM tag will populate the column (using the `tag:` prefix). But sources can also be metadata fields (`meta:`), expressions (`expr:`), mappings (`mapping:`), or aggregate data like `tags`, `meta`, or `refs`. See the [Column Sources](#column-sources) section below for all the options.
+What we did here is add a handful of `column` declarations. Each `column` has a `name` and a `source`. In this example, the `source` specifies which OSM tag will populate the column (using the `tag:` prefix). But sources can also be metadata fields (`meta:`), literal constants (`const:`), expressions (`expr:`), mappings (`mapping:`), or aggregate data like `tags`, `meta`, or `refs`. See the [Column Sources](#column-sources) section below for all the options.
 
 [GeoJSON.io](https://geojson.io/#data=data:text/x-url,https%3A%2F%2Fimages.osm.lol%2Ftoilets_v3.geojson)
 
@@ -412,6 +412,30 @@ columns:
   - name: user_name
     source: meta:user
 ```
+
+### Constant Sources
+
+Add fixed literal values without running a CEL expression per feature:
+
+```yaml
+columns:
+  - name: dataset
+    source: const:buildings-v1
+
+  - name: priority
+    source: const:3
+    type: integer
+
+  - name: score
+    source: const:2.5
+    type: float
+
+  - name: payload
+    source: 'const:{"source":"manual"}'
+    type: json
+```
+
+`const:` values are parsed once when the config is loaded, using the column's declared `type`.
 
 ### JSON Aggregate Sources
 
