@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use crate::app::cache::NodeCacheStats;
 use crate::config::{CompiledConfig, RuntimeConfig};
 use crate::metadata::MetadataAvailability;
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
@@ -21,6 +22,53 @@ pub(crate) fn needs_way_store(config: &CompiledConfig) -> bool {
     config.tables.values().any(|table| table.geometry.relation)
 }
 
+/// Pre-scan node IDs before selecting `--node-cache-mode auto`.
+///
+/// Sparse cache requires monotonically increasing node IDs. Dense cache cost is
+/// driven by the highest node ID, not the compressed PBF size, so auto mode
+/// needs these real input statistics before it can make a safe choice.
+pub(crate) fn prescan_node_cache_stats(path: &Path) -> Result<NodeCacheStats> {
+    let mut reader = BlobReader::from_path(path)?;
+    let mut stats = NodeCacheStats::new();
+    let progress = ProgressCounter::new("Pre-scan: nodes", 1_000_000);
+
+    reader.try_for_each(|blob_result| -> Result<()> {
+        let blob = blob_result?;
+        match blob.decode() {
+            Ok(BlobDecode::OsmData(block)) => {
+                let mut node_count = 0u64;
+                for element in block.elements() {
+                    match element {
+                        Element::Node(node) => {
+                            stats.observe_node_id(node.id() as u64);
+                            node_count += 1;
+                        }
+                        Element::DenseNode(node) => {
+                            stats.observe_node_id(node.id() as u64);
+                            node_count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                if node_count > 0 {
+                    progress.inc(node_count);
+                }
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    })?;
+
+    progress.finish();
+    tracing::info!(
+        "Pre-scan: found {} nodes; max node ID {}; sorted: {}",
+        stats.node_count,
+        stats.max_node_id,
+        stats.node_ids_sorted
+    );
+    Ok(stats)
+}
 /// Pass 0: Scan relations to collect the set of member way IDs that will be
 /// needed for relation geometry assembly. This allows pass 1 to collect only
 /// the referenced ways instead of all ways, keeping memory bounded for

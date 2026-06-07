@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Updated open-way geometry semantics so `way` only accepts valid open-way outputs: `linestring`, `centroid`, or `false`.
 
   The `centroid` mode now means a line centroid for open ways and an area centroid for closed ways.
+- Replaced `auto` node cache selection's fixed 5 GiB file-size cutoff with a node pre-scan that chooses from real node count, max node ID, and node ID sortedness.
 - GeoParquet now omits the always-empty `properties` column unless extra properties are requested with `--all-tags`.
 - Updated documentation to distinguish open-way handling from closed-way handling and to remove open-way polygon examples.
 - Updated the declared Rust minimum version to 1.88.0 to match the current dependency graph.

@@ -149,6 +149,59 @@ table:
 }
 
 #[test]
+fn auto_node_cache_uses_prescan_stats() {
+    let filters = r#"
+table:
+  name: lanes
+  filter: 'lanes'
+  geometry:
+    node: false
+    way: "linestring"
+    relation: false
+  columns:
+    - name: "lanes"
+      source: "tag:lanes"
+      type: "string"
+"#;
+    let filters_path = write_temp_filters(filters);
+    let exe = env!("CARGO_BIN_EXE_cosmo");
+
+    let output = Command::new(exe)
+        .arg("-v")
+        .arg("convert")
+        .arg("--input")
+        .arg(fixture_path())
+        .arg("--output")
+        .arg("-")
+        .arg("--format")
+        .arg("geojsonl")
+        .arg("--filters")
+        .arg(&filters_path)
+        .output()
+        .expect("run cosmo");
+
+    let _ = std::fs::remove_file(&filters_path);
+
+    assert!(output.status.success(), "cosmo should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(lines, 49);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Pre-scan: collecting node cache statistics"),
+        "auto mode should run node cache pre-scan; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Node cache: memory (auto-selected"),
+        "fixture should auto-select memory from pre-scan stats; stderr: {stderr}"
+    );
+}
+
+#[test]
 fn writes_parquet_output() {
     let filters = r#"
 table:

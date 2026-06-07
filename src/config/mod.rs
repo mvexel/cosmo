@@ -126,7 +126,7 @@ impl FiltersConfig {
     }
 }
 
-pub const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+pub const LARGE_INPUT_WARNING_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
 pub const DEFAULT_MAX_NODES: u64 = 16_000_000_000;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -142,7 +142,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             node_cache_mode: NodeCacheMode::Auto,
-            // OSM has ~10.3B nodes as of 2025; use generous headroom to skip prepass scan
+            // Upper bound for explicit dense mode; auto mode sizes dense caches from pre-scan stats.
             node_cache_max_nodes: DEFAULT_MAX_NODES,
             all_tags: false,
             bbox: None,
@@ -153,11 +153,11 @@ impl Default for RuntimeConfig {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeCacheMode {
-    /// Automatically select based on input file size (default)
+    /// Automatically select from node pre-scan stats (default)
     Auto,
-    /// Sorted array - memory-efficient for extracts (<5GB)
+    /// Sorted array - memory-efficient for sorted sparse extracts
     Sparse,
-    /// Direct ID indexing - best for planet/continent (≥5GB)
+    /// Direct ID indexing - best for dense node ID ranges or unsorted input
     Dense,
     /// In-memory HashMap (no disk usage)
     Memory,

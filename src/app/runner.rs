@@ -10,6 +10,7 @@ use super::cache::resolve_node_cache_mode;
 use super::cli::ConvertArgs;
 use super::passes::{
     needs_way_store, pass0_scan_relations, pass1_index_nodes, pass2_process, pass_nodes_only,
+    prescan_node_cache_stats,
 };
 use super::reporting::user_metadata_warning;
 use super::sink_setup::SinkMap;
@@ -38,12 +39,22 @@ pub fn process_pbf(
             }
         }
 
-        let (resolved_mode, mode_desc) =
-            resolve_node_cache_mode(runtime.node_cache_mode, &args.input);
+        let node_cache_stats = if matches!(runtime.node_cache_mode, NodeCacheMode::Auto) {
+            tracing::info!("Pre-scan: collecting node cache statistics...");
+            Some(prescan_node_cache_stats(&args.input)?)
+        } else {
+            None
+        };
+        let resolved = resolve_node_cache_mode(
+            runtime.node_cache_mode,
+            node_cache_stats.as_ref(),
+            runtime.node_cache_max_nodes,
+        )?;
+        let resolved_mode = resolved.mode;
 
         let node_store = match resolved_mode {
             NodeCacheMode::Sparse => {
-                tracing::info!("Node cache: {} (temp file)", mode_desc);
+                tracing::info!("Node cache: {} (temp file)", resolved.description);
                 NodeStoreWriter::new_sparse()
                     .context("Pipeline: Failed to create sparse node store")?
             }
@@ -51,24 +62,24 @@ pub fn process_pbf(
                 if let Some(ref path) = args.node_cache {
                     tracing::info!(
                         "Node cache: {} at {:?} (max {} nodes)",
-                        mode_desc,
+                        resolved.description,
                         path,
-                        runtime.node_cache_max_nodes
+                        resolved.dense_max_nodes
                     );
-                    NodeStoreWriter::new_dense(path, runtime.node_cache_max_nodes)
+                    NodeStoreWriter::new_dense(path, resolved.dense_max_nodes)
                         .context("Pipeline: Failed to create dense node store")?
                 } else {
                     tracing::info!(
                         "Node cache: {} (temp file, max {} nodes)",
-                        mode_desc,
-                        runtime.node_cache_max_nodes
+                        resolved.description,
+                        resolved.dense_max_nodes
                     );
-                    NodeStoreWriter::new_dense_temp(runtime.node_cache_max_nodes)
+                    NodeStoreWriter::new_dense_temp(resolved.dense_max_nodes)
                         .context("Pipeline: Failed to create temporary dense node store")?
                 }
             }
             NodeCacheMode::Memory => {
-                tracing::info!("Node cache: {}", mode_desc);
+                tracing::info!("Node cache: {}", resolved.description);
                 NodeStoreWriter::new_memory()
             }
             NodeCacheMode::Auto => unreachable!("Auto mode should have been resolved"),
@@ -89,7 +100,7 @@ pub fn process_pbf(
         let needs_relations = needs_way_store(&config);
         if needs_relations {
             if let Ok(metadata) = std::fs::metadata(&args.input) {
-                if metadata.len() >= crate::config::DENSE_THRESHOLD_BYTES {
+                if metadata.len() >= crate::config::LARGE_INPUT_WARNING_BYTES {
                     let size_gb = metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0);
                     tracing::warn!(
                         "Input is {:.1} GB with relation processing enabled. \

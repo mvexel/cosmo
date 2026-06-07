@@ -98,12 +98,12 @@ OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates
 | `--node-cache-max-nodes <N>` | Maximum node ID to allocate address space for (dense mode) | 16,000,000,000 |
 
 **Cache Modes:**
-- **auto** - Automatically selects `sparse` for files <5GB or `dense` for files ≥5GB
+- **auto** - Runs a node ID pre-scan, then selects `memory` for small inputs, `sparse` for sorted sparse ID distributions, or `dense` when direct indexing is smaller or sparse is unavailable
 - **sparse** - Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. **Requires sorted input** - PBF files from OSM/GeoFabrik are sorted; use `osmium sort` if unsure
-- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent). Creates a sparse file with ~128GB virtual size and checks the target filesystem has enough free space before mapping it; use `--node-cache` to place it on a large disk
-- **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). For planet processing you'd need 384GB+ RAM
+- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for dense node ID coverage or unsorted inputs that do not fit memory. Auto mode sizes dense caches from the pre-scanned maximum node ID; explicit dense mode uses `--node-cache-max-nodes`. Use `--node-cache` to place it on a large disk
+- **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). Auto mode only selects it for inputs with at most 1,000,000 nodes; for planet processing you'd need 384GB+ RAM
 
-**Why these options?** OSM node IDs are globally assigned, so even a small city extract will have IDs scattered across the entire range (10+ billion). For small extracts, sparse mode with binary search is actually faster than dense. For large extracts, dense mode's O(1) lookup wins and uses less disk space. Memory mode is fastest but only practical for smaller extracts or machines with lots of RAM
+**Why these options?** OSM node IDs are globally assigned, so even a small city extract can have IDs scattered across the global range. Auto mode uses real node count, max node ID, and sortedness instead of compressed file size: small inputs avoid disk with memory mode, sorted sparse extracts use compact sparse lookup, and dense ID ranges use O(1) mmap lookup.
 
 #### Example: Extract POIs from a Region
 
