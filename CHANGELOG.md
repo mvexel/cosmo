@@ -31,7 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Kept the raw-config to compiled-config phase split so filters, mappings, and CEL expressions are parsed once before PBF processing.
 - Replaced the `winnow`-based tokenizer with a small purpose-built Rust lexer for the existing filter DSL.
 - Updated open-way geometry semantics so `way` only accepts valid open-way outputs: `linestring`, `centroid`, or `false`.
+
   The `centroid` mode now means a line centroid for open ways and an area centroid for closed ways.
+- GeoParquet now omits the always-empty `properties` column unless extra properties are requested with `--all-tags`.
 - Updated documentation to distinguish open-way handling from closed-way handling and to remove open-way polygon examples.
 - Updated the declared Rust minimum version to 1.88.0 to match the current dependency graph.
 - Eliminated `coords.clone()` allocation on the way-processing hot path.

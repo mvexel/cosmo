@@ -1,4 +1,5 @@
 use osmpbf::{DenseNodeInfo, Info};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -44,7 +45,20 @@ impl MetadataField {
     pub const SUPPORTED: &'static str =
         "id, type, visible, version, changeset, timestamp, uid, user";
 
-    pub fn parse(name: &str) -> Result<Self, String> {
+    pub fn kind(self) -> MetadataFieldKind {
+        match self {
+            Self::Id | Self::Version | Self::Changeset | Self::Uid => MetadataFieldKind::Integer,
+            Self::Type | Self::User => MetadataFieldKind::String,
+            Self::Visible => MetadataFieldKind::Boolean,
+            Self::Timestamp => MetadataFieldKind::Timestamp,
+        }
+    }
+}
+
+impl FromStr for MetadataField {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
         match name {
             "id" => Ok(Self::Id),
             "type" => Ok(Self::Type),
@@ -58,15 +72,6 @@ impl MetadataField {
                 "Unknown metadata field 'meta:{name}'; supported fields: {}",
                 Self::SUPPORTED
             )),
-        }
-    }
-
-    pub fn kind(self) -> MetadataFieldKind {
-        match self {
-            Self::Id | Self::Version | Self::Changeset | Self::Uid => MetadataFieldKind::Integer,
-            Self::Type | Self::User => MetadataFieldKind::String,
-            Self::Visible => MetadataFieldKind::Boolean,
-            Self::Timestamp => MetadataFieldKind::Timestamp,
         }
     }
 }
@@ -221,7 +226,7 @@ pub fn metadata_value_exists(field: MetadataField, metadata: Option<&MetadataFie
 }
 
 pub fn extract_meta_value(key: &str, metadata: Option<&MetadataFields>) -> Option<String> {
-    MetadataField::parse(key)
+    key.parse::<MetadataField>()
         .ok()
         .and_then(|field| metadata_value_string(field, metadata))
 }
@@ -277,7 +282,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_metadata_field() {
-        let err = MetadataField::parse("unknown").unwrap_err();
+        let err = "unknown".parse::<MetadataField>().unwrap_err();
 
         assert!(err.contains("Unknown metadata field 'meta:unknown'"));
         assert!(err.contains(MetadataField::SUPPORTED));

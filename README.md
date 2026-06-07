@@ -192,6 +192,8 @@ cosmo convert -i data.osm.pbf -f config.yaml -o - | tippecanoe
 ### GeoParquet
 Columnar format with spatial metadata. Efficient for large datasets and analytics.
 
+GeoParquet writes only declared columns plus `geometry` by default. When `--all-tags` is enabled, it also writes a `properties` JSON column containing the extra tag payload.
+
 **Note:** Output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
 
 ### MapRoulette

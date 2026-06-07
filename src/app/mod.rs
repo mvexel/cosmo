@@ -230,6 +230,7 @@ pub fn init_sink(
     format: &OutputFormat,
     output: &Path,
     config: &CompiledConfig,
+    include_properties: bool,
 ) -> Result<Box<dyn DataSink>> {
     match format {
         OutputFormat::GeoJson => {
@@ -261,7 +262,12 @@ pub fn init_sink(
                 output,
                 columns.len()
             );
-            Ok(Box::new(GeoParquetSink::new(output, columns)?))
+            let sink = if include_properties {
+                GeoParquetSink::new_with_properties(output, columns, true)?
+            } else {
+                GeoParquetSink::new(output, columns)?
+            };
+            Ok(Box::new(sink))
         }
         OutputFormat::Csv => {
             let columns = collect_columns(config)?;
@@ -298,6 +304,7 @@ pub fn init_sinks(
     format: &OutputFormat,
     output_dir: &Path,
     config: &CompiledConfig,
+    include_properties: bool,
 ) -> Result<SinkMap> {
     // Validate output is not stdout for multi-table
     if output_dir == Path::new("-") {
@@ -330,7 +337,13 @@ pub fn init_sinks(
             OutputFormat::GeoJsonl => Box::new(GeoJsonlSink::new(&file_path)?),
             OutputFormat::GeoParquet => {
                 let columns = collect_columns_for_table(table_config)?;
-                Box::new(GeoParquetSink::new(&file_path, columns)?)
+                if include_properties {
+                    Box::new(GeoParquetSink::new_with_properties(
+                        &file_path, columns, true,
+                    )?)
+                } else {
+                    Box::new(GeoParquetSink::new(&file_path, columns)?)
+                }
             }
             OutputFormat::Csv => {
                 let columns = collect_columns_for_table(table_config)?;

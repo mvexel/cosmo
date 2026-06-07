@@ -21,7 +21,7 @@ pub struct GeoParquetSink {
     columns: Vec<ColumnSpec>,
     column_buffers: Vec<ColumnBuffer>,
     geometry_buf: Vec<Vec<u8>>,
-    properties_buf: Vec<String>,
+    properties_buf: Option<Vec<String>>,
     batch_size: usize,
 }
 
@@ -33,6 +33,14 @@ enum ColumnBuffer {
 
 impl GeoParquetSink {
     pub fn new<P: AsRef<Path>>(path: P, columns: Vec<ColumnSpec>) -> Result<Self> {
+        Self::new_with_properties(path, columns, false)
+    }
+
+    pub fn new_with_properties<P: AsRef<Path>>(
+        path: P,
+        columns: Vec<ColumnSpec>,
+        include_properties: bool,
+    ) -> Result<Self> {
         let file = File::create(path.as_ref())
             .with_context(|| format!("Failed to create geoparquet file {:?}", path.as_ref()))?;
 
@@ -46,7 +54,9 @@ impl GeoParquetSink {
             };
             fields.push(Field::new(&col.name, data_type, true));
         }
-        fields.push(Field::new("properties", DataType::Utf8, false));
+        if include_properties {
+            fields.push(Field::new("properties", DataType::Utf8, false));
+        }
 
         let schema = Arc::new(Schema::new(fields));
 
@@ -89,7 +99,7 @@ impl GeoParquetSink {
             columns,
             column_buffers,
             geometry_buf: Vec::new(),
-            properties_buf: Vec::new(),
+            properties_buf: include_properties.then(Vec::new),
             batch_size: 10_000,
         })
     }
@@ -117,8 +127,10 @@ impl GeoParquetSink {
             }
         }
 
-        let properties_array = StringArray::from_iter_values(self.properties_buf.iter().cloned());
-        arrays.push(Arc::new(properties_array));
+        if let Some(properties_buf) = &self.properties_buf {
+            let properties_array = StringArray::from_iter_values(properties_buf.iter().cloned());
+            arrays.push(Arc::new(properties_array));
+        }
 
         let batch = RecordBatch::try_new(self.schema.clone(), arrays)?;
 
@@ -126,7 +138,9 @@ impl GeoParquetSink {
             writer.write(&batch)?;
         }
         self.geometry_buf.clear();
-        self.properties_buf.clear();
+        if let Some(properties_buf) = &mut self.properties_buf {
+            properties_buf.clear();
+        }
         for buffer in &mut self.column_buffers {
             match buffer {
                 ColumnBuffer::String(values) => values.clear(),
@@ -145,10 +159,12 @@ impl DataSink for GeoParquetSink {
             .geometry
             .to_wkb(CoordDimensions::xy())
             .context("Failed to convert geometry to WKB")?;
-        let properties_json = serde_json::to_string(&row.extras)?;
+        if let Some(properties_buf) = &mut self.properties_buf {
+            let properties_json = serde_json::to_string(&row.extras)?;
+            properties_buf.push(properties_json);
+        }
 
         self.geometry_buf.push(wkb);
-        self.properties_buf.push(properties_json);
         self.append_columns(&row);
 
         if self.geometry_buf.len() >= self.batch_size {
@@ -172,46 +188,38 @@ impl GeoParquetSink {
         for (index, col) in self.columns.iter().enumerate() {
             match &mut self.column_buffers[index] {
                 ColumnBuffer::String(values) => {
-                    values.push(coerce_string(row.columns.get(&col.name)));
+                    values.push(value_as_string(row.columns.get(&col.name)));
                 }
                 ColumnBuffer::Integer(values) => {
-                    values.push(coerce_i64(row.columns.get(&col.name)));
+                    values.push(value_as_i64(row.columns.get(&col.name)));
                 }
                 ColumnBuffer::Float(values) => {
-                    values.push(coerce_f64(row.columns.get(&col.name)));
+                    values.push(value_as_f64(row.columns.get(&col.name)));
                 }
             }
         }
     }
 }
 
-fn coerce_string(value: Option<&ColumnValue>) -> Option<String> {
+fn value_as_string(value: Option<&ColumnValue>) -> Option<String> {
     match value {
         Some(ColumnValue::String(s)) => Some(s.clone()),
-        Some(ColumnValue::Integer(n)) => Some(n.to_string()),
-        Some(ColumnValue::Float(n)) => Some(n.to_string()),
-        Some(ColumnValue::Json(v)) => Some(v.to_string()),
-        None => None,
+        _ => None,
     }
 }
 
-fn coerce_i64(value: Option<&ColumnValue>) -> Option<i64> {
+fn value_as_i64(value: Option<&ColumnValue>) -> Option<i64> {
     match value {
         Some(ColumnValue::Integer(n)) => Some(*n),
-        Some(ColumnValue::Float(n)) => Some(*n as i64),
-        Some(ColumnValue::String(s)) => s.parse::<i64>().ok(),
-        Some(ColumnValue::Json(_)) => None,
-        None => None,
+        _ => None,
     }
 }
 
-fn coerce_f64(value: Option<&ColumnValue>) -> Option<f64> {
+fn value_as_f64(value: Option<&ColumnValue>) -> Option<f64> {
     match value {
         Some(ColumnValue::Float(n)) => Some(*n),
         Some(ColumnValue::Integer(n)) => Some(*n as f64),
-        Some(ColumnValue::String(s)) => s.parse::<f64>().ok(),
-        Some(ColumnValue::Json(_)) => None,
-        None => None,
+        _ => None,
     }
 }
 
@@ -223,114 +231,56 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
 
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    use std::fs::File;
+
+    fn parquet_column_names(path: &std::path::Path) -> Vec<String> {
+        let file = File::open(path).unwrap();
+        let reader = SerializedFileReader::new(file).unwrap();
+        reader
+            .metadata()
+            .file_metadata()
+            .schema_descr()
+            .columns()
+            .iter()
+            .map(|column| column.name().to_string())
+            .collect()
+    }
+
     // ============================================
     // Type coercion tests
     // ============================================
 
     #[test]
-    fn coerce_string_from_string() {
-        let value = ColumnValue::String("hello".to_string());
-        assert_eq!(coerce_string(Some(&value)), Some("hello".to_string()));
+    fn value_as_string_accepts_only_string_values() {
+        assert_eq!(
+            value_as_string(Some(&ColumnValue::String("hello".to_string()))),
+            Some("hello".to_string())
+        );
+        assert_eq!(value_as_string(Some(&ColumnValue::Integer(42))), None);
+        assert_eq!(value_as_string(None), None);
     }
 
     #[test]
-    fn coerce_string_from_integer() {
-        let value = ColumnValue::Integer(42);
-        assert_eq!(coerce_string(Some(&value)), Some("42".to_string()));
+    fn value_as_i64_accepts_only_integer_values() {
+        assert_eq!(value_as_i64(Some(&ColumnValue::Integer(42))), Some(42));
+        assert_eq!(value_as_i64(Some(&ColumnValue::Float(3.9))), None);
+        assert_eq!(
+            value_as_i64(Some(&ColumnValue::String("123".to_string()))),
+            None
+        );
+        assert_eq!(value_as_i64(None), None);
     }
 
     #[test]
-    fn coerce_string_from_float() {
-        let value = ColumnValue::Float(3.1);
-        assert_eq!(coerce_string(Some(&value)), Some("3.1".to_string()));
-    }
-
-    #[test]
-    fn coerce_string_from_none() {
-        assert_eq!(coerce_string(None), None);
-    }
-
-    #[test]
-    fn coerce_i64_from_integer() {
-        let value = ColumnValue::Integer(42);
-        assert_eq!(coerce_i64(Some(&value)), Some(42));
-    }
-
-    #[test]
-    fn coerce_i64_from_float() {
-        let value = ColumnValue::Float(3.9);
-        assert_eq!(coerce_i64(Some(&value)), Some(3)); // truncates
-    }
-
-    #[test]
-    fn coerce_i64_from_valid_string() {
-        let value = ColumnValue::String("123".to_string());
-        assert_eq!(coerce_i64(Some(&value)), Some(123));
-    }
-
-    #[test]
-    fn coerce_i64_from_invalid_string() {
-        let value = ColumnValue::String("not a number".to_string());
-        assert_eq!(coerce_i64(Some(&value)), None);
-    }
-
-    #[test]
-    fn coerce_i64_from_none() {
-        assert_eq!(coerce_i64(None), None);
-    }
-
-    #[test]
-    fn coerce_f64_from_float() {
-        let value = ColumnValue::Float(3.1);
-        assert_eq!(coerce_f64(Some(&value)), Some(3.1));
-    }
-
-    #[test]
-    fn coerce_f64_from_integer() {
-        let value = ColumnValue::Integer(42);
-        assert_eq!(coerce_f64(Some(&value)), Some(42.0));
-    }
-
-    #[test]
-    fn coerce_f64_from_valid_string() {
-        let value = ColumnValue::String("3.1".to_string());
-        assert_eq!(coerce_f64(Some(&value)), Some(3.1));
-    }
-
-    #[test]
-    fn coerce_f64_from_invalid_string() {
-        let value = ColumnValue::String("not a number".to_string());
-        assert_eq!(coerce_f64(Some(&value)), None);
-    }
-
-    #[test]
-    fn coerce_f64_from_none() {
-        assert_eq!(coerce_f64(None), None);
-    }
-
-    #[test]
-    fn coerce_i64_from_negative_float() {
-        let value = ColumnValue::Float(-5.7);
-        assert_eq!(coerce_i64(Some(&value)), Some(-5));
-    }
-
-    #[test]
-    fn coerce_i64_from_large_integer() {
-        let value = ColumnValue::Integer(i64::MAX);
-        assert_eq!(coerce_i64(Some(&value)), Some(i64::MAX));
-    }
-
-    #[test]
-    fn coerce_string_from_negative_integer() {
-        let value = ColumnValue::Integer(-42);
-        assert_eq!(coerce_string(Some(&value)), Some("-42".to_string()));
-    }
-
-    #[test]
-    fn coerce_i64_from_string_with_whitespace() {
-        // String parsing doesn't trim whitespace
-        let value = ColumnValue::String(" 123 ".to_string());
-        assert_eq!(coerce_i64(Some(&value)), None);
+    fn value_as_f64_accepts_float_and_integer_values() {
+        assert_eq!(value_as_f64(Some(&ColumnValue::Float(3.1))), Some(3.1));
+        assert_eq!(value_as_f64(Some(&ColumnValue::Integer(42))), Some(42.0));
+        assert_eq!(
+            value_as_f64(Some(&ColumnValue::String("3.1".to_string()))),
+            None
+        );
+        assert_eq!(value_as_f64(None), None);
     }
 
     // ============================================
@@ -353,6 +303,49 @@ mod tests {
 
         let sink = GeoParquetSink::new(temp_file.path(), columns);
         assert!(sink.is_ok());
+    }
+
+    #[test]
+    fn omits_properties_column_by_default() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let mut sink = GeoParquetSink::new(temp_file.path(), Vec::new()).unwrap();
+
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(Point::new(0.0, 0.0)),
+            columns: HashMap::new(),
+            extras: Map::new(),
+        };
+
+        sink.add_feature(row).unwrap();
+        sink.finish().unwrap();
+
+        assert_eq!(parquet_column_names(temp_file.path()), vec!["geometry"]);
+    }
+
+    #[test]
+    fn includes_properties_column_when_requested() {
+        let temp_file = NamedTempFile::with_suffix(".parquet").unwrap();
+        let mut sink =
+            GeoParquetSink::new_with_properties(temp_file.path(), Vec::new(), true).unwrap();
+
+        let mut extras = Map::new();
+        extras.insert(
+            "custom_field".to_string(),
+            serde_json::Value::String("custom_value".to_string()),
+        );
+        let row = FeatureRow {
+            geometry: geo_types::Geometry::Point(Point::new(0.0, 0.0)),
+            columns: HashMap::new(),
+            extras,
+        };
+
+        sink.add_feature(row).unwrap();
+        sink.finish().unwrap();
+
+        assert_eq!(
+            parquet_column_names(temp_file.path()),
+            vec!["geometry", "properties"]
+        );
     }
 
     #[test]

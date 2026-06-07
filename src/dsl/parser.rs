@@ -106,7 +106,7 @@ impl Parser {
                         // Simple negated existence: !tag or !meta:field
                         self.advance(); // consume ident
                         if let Some(field_name) = key.strip_prefix("meta:") {
-                            let field = MetadataField::parse(field_name)?;
+                            let field = field_name.parse::<MetadataField>()?;
                             return Ok(FilterAst::MetadataExists {
                                 field,
                                 negated: true,
@@ -154,7 +154,7 @@ impl Parser {
         let op = self.peek_compare_op();
 
         if let Some(field_name) = key.strip_prefix("meta:") {
-            let field = MetadataField::parse(field_name)?;
+            let field = field_name.parse::<MetadataField>()?;
             return self.parse_metadata_expr(field, op);
         }
 

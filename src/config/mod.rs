@@ -445,21 +445,6 @@ pub struct UserMetadataReferences {
     pub uid: bool,
 }
 
-impl UserMetadataReferences {
-    fn include_field(&mut self, field: MetadataField) {
-        match field {
-            MetadataField::User => self.user_name = true,
-            MetadataField::Uid => self.uid = true,
-            _ => {}
-        }
-    }
-
-    fn include_all_meta(&mut self) {
-        self.user_name = true;
-        self.uid = true;
-    }
-}
-
 impl CompiledConfig {
     pub fn user_metadata_references(&self) -> UserMetadataReferences {
         let mut usage = UserMetadataReferences::default();
@@ -473,12 +458,15 @@ impl CompiledConfig {
             }
             for column in &table.columns {
                 match &column.source {
-                    ColumnSource::Meta(field) => {
-                        if let Ok(field) = MetadataField::parse(field) {
-                            usage.include_field(field);
-                        }
+                    ColumnSource::Meta(field) => match field.parse::<MetadataField>() {
+                        Ok(MetadataField::User) => usage.user_name = true,
+                        Ok(MetadataField::Uid) => usage.uid = true,
+                        _ => {}
+                    },
+                    ColumnSource::AllMeta => {
+                        usage.user_name = true;
+                        usage.uid = true;
                     }
-                    ColumnSource::AllMeta => usage.include_all_meta(),
                     _ => {}
                 }
             }
@@ -540,7 +528,9 @@ fn parse_column_source(
         return Ok(ColumnSource::Tag(tag.to_string()));
     }
     if let Some(field) = source.strip_prefix("meta:") {
-        crate::metadata::MetadataField::parse(field).map_err(anyhow::Error::msg)?;
+        field
+            .parse::<crate::metadata::MetadataField>()
+            .map_err(anyhow::Error::msg)?;
         return Ok(ColumnSource::Meta(field.to_string()));
     }
     if let Some(value) = source.strip_prefix("const:") {

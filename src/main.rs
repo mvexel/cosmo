@@ -226,13 +226,13 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     let sinks = if compiled.tables.len() == 1 {
         // Single table mode: support stdout and file output
         let (table_name, _) = compiled.tables.iter().next().unwrap();
-        let sink = init_sink(&format, &args.output, &compiled)?;
+        let sink = init_sink(&format, &args.output, &compiled, runtime.all_tags)?;
         let mut map = HashMap::new();
         map.insert(table_name.clone(), Arc::new(Mutex::new(sink)));
         map
     } else {
         // Multi-table mode: require directory
-        init_sinks(&format, &args.output, &compiled)?
+        init_sinks(&format, &args.output, &compiled, runtime.all_tags)?
     };
 
     /*

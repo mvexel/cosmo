@@ -469,6 +469,8 @@ Example output:
 }
 ```
 
+For GeoParquet output, these declared columns are written as first-class Parquet columns. The sink omits the extra `properties` JSON column unless `--all-tags` is enabled.
+
 ### Mapping Sources
 
 Use named mappings for categorization (see [Mappings](#mappings)):
