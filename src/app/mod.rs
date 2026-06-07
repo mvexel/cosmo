@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use crossbeam_channel::bounded;
 use osmpbf::{BlobDecode, BlobReader, Element, HeaderBlock, RelMemberType};
 use rayon::prelude::*;
@@ -13,6 +13,7 @@ use crate::config::{
 };
 use crate::metadata::{MetadataAvailability, MetadataAvailabilitySnapshot};
 use crate::pipeline::{BlockProcessor, NodesOnlyProcessor, StandardProcessor, WayStore};
+pub use crate::sinks::OutputFormat;
 use crate::sinks::{
     ColumnSpec, CsvWktSink, DataSink, FeatureRow, GeoJsonSink, GeoJsonlSink, GeoParquetSink,
     MapRouletteSink,
@@ -126,21 +127,6 @@ fn parse_bbox(s: &str) -> Result<[f64; 4], String> {
     Ok([min_lon, min_lat, max_lon, max_lat])
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-#[allow(clippy::enum_variant_names)]
-pub enum OutputFormat {
-    #[value(name = "geojson")]
-    GeoJson,
-    #[value(name = "geojsonl")]
-    GeoJsonl,
-    #[value(name = "geoparquet", alias = "parquet")]
-    GeoParquet,
-    #[value(name = "csv")]
-    Csv,
-    #[value(name = "maproulette")]
-    MapRoulette,
-}
-
 pub fn resolve_node_cache_mode(
     requested: NodeCacheMode,
     input_path: &Path,
@@ -187,13 +173,7 @@ pub fn summarize_filters_compiled(config: &CompiledConfig) -> String {
 }
 
 pub fn output_format_label(format: &OutputFormat) -> &'static str {
-    match format {
-        OutputFormat::GeoJson => "geojson",
-        OutputFormat::GeoJsonl => "geojsonl",
-        OutputFormat::GeoParquet => "geoparquet",
-        OutputFormat::Csv => "csv",
-        OutputFormat::MapRoulette => "maproulette",
-    }
+    format.metadata().canonical_name
 }
 
 pub fn log_sorted_header(header: &HeaderBlock, logged: &Arc<AtomicBool>) {
@@ -321,13 +301,7 @@ pub fn init_sinks(
     }
 
     let mut sinks = HashMap::new();
-    let extension = match format {
-        OutputFormat::GeoJson => "geojson",
-        OutputFormat::GeoJsonl => "geojsonl",
-        OutputFormat::GeoParquet => "parquet",
-        OutputFormat::Csv => "csv",
-        OutputFormat::MapRoulette => "geojson",
-    };
+    let extension = format.metadata().default_extension;
 
     for (table_name, table_config) in &config.tables {
         let file_path = output_dir.join(format!("{table_name}.{extension}"));

@@ -208,13 +208,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
         .format
         .or_else(|| {
             let ext = args.output.extension()?.to_str()?;
-            match ext.to_lowercase().as_str() {
-                "geojson" => Some(OutputFormat::GeoJson),
-                "geojsonl" | "jsonl" | "json" => Some(OutputFormat::GeoJsonl),
-                "parquet" => Some(OutputFormat::GeoParquet),
-                "csv" => Some(OutputFormat::Csv),
-                _ => None,
-            }
+            OutputFormat::from_extension(ext)
         })
         .context("CLI: Could not detect output format from extension; use --format")?;
 
