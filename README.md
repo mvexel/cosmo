@@ -75,17 +75,19 @@ cosmo convert [OPTIONS]
 |--------|-------|-------------|
 | `--input <PATH>` | `-i` | Input OSM PBF file |
 | `--filters <PATH>` | `-f` | Filter configuration (YAML) |
-| `--output <PATH>` | `-o` | Output file (`.geojson`, `.geojsonl`, `.parquet`) or `-` for stdout (GeoJSONL only) |
+| `--output <PATH>` | `-o` | Output file (`.geojson`, `.geojsonl`, `.parquet`, `.csv`) or `-` for stdout in streaming formats (`geojsonl`, `csv`, `maproulette`) |
 
 #### Common Options
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--format <FORMAT>` | | Override format detection: `geojson`, `geojsonl`, `parquet` | Auto-detect from extension |
+| `--format <FORMAT>` | | Override format detection: `geojson`, `geojsonl`, `geoparquet`/`parquet`, `csv`, `maproulette` | Auto-detect from extension |
 | `--bbox <BBOX>` | | Filter by bounding box: `min_lon,min_lat,max_lon,max_lat` | None |
 | `--all-tags` | | Include all OSM tags as JSON in addition to configured columns | false |
 | `--verbose` | `-v` | Enable detailed logging | false |
 | `--jobs <N>` | `-j` | Parallel processing threads | All CPUs |
+
+`--bbox` filters completed output geometries by intersection. It does not clip geometries, produce smaller PBF extracts, or preserve topology outside the input; use `osmium extract` before Cosmo when you need those guarantees.
 
 #### Node Cache Options
 
@@ -194,11 +196,14 @@ Columnar format with spatial metadata. Efficient for large datasets and analytic
 
 GeoParquet writes only declared columns plus `geometry` by default. When `--all-tags` is enabled, it also writes a `properties` JSON column containing the extra tag payload.
 
-**Note:** Output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+**Note:** GeoParquet output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+
+### CSV
+CSV with declared columns plus a WKT `geometry` column. Supports streaming to stdout (`--output -`).
 
 ### MapRoulette
 
-MapRoulette is a platform for creating and managing OSM mapping tasks. Cosmo can output [MapRoulette-compatible](https://learn.maproulette.org/en-US/documentation/line-by-line-geojson/) GeoJSONL files that can be uploaded to MapRoulette as tasks when you create a new challenge.
+MapRoulette is a platform for creating and managing OSM mapping tasks. Cosmo's `maproulette` format writes RFC 7464 records: each line starts with the record-separator byte and contains a FeatureCollection with one task feature, ready for MapRoulette's [line-by-line GeoJSON](https://learn.maproulette.org/en-US/documentation/line-by-line-geojson/) challenge upload.
 
 ## Documentation
 

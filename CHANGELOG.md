@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Multipolygon and boundary relation support** (`relation: true` in geometry config): assembles outer/inner way members into polygon/multipolygon geometries for `type=multipolygon` and `type=boundary` relations.
 - **3-pass architecture** for planet-scale relation processing: pass 0 scans relation member way IDs, pass 1 collects only those ways, pass 2 processes all elements. Skipped when no table enables relations.
 - **Constant column source** (`source: const:<value>`): emits typed literal values without compiling/evaluating CEL per feature.
+- **Bounding box output filter** (`--bbox min_lon,min_lat,max_lon,max_lat`): emits only features whose resolved geometry intersects the bbox, without clipping geometry or replacing `osmium extract` for topology-preserving PBF cuts.
 - Added example filter for MapRoulette challenges (`examples/maproulette/business-missing-phone.yml`).
 - Added example filter for building extraction with relations (`examples/buildings.yaml`).
 - Added `closed_way: false` support to exclude closed ways independently from open ways.

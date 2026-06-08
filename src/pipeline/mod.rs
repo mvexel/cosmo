@@ -173,7 +173,6 @@ pub fn build_feature_row(
             ColumnSource::Cel(program) => {
                 match metadata {
                     Some(m) => {
-                        // TODO: Add metadata to CEL context properly if needed beyond tags
                         let mut meta_map = HashMap::new();
                         meta_map.insert("id".to_string(), m.id.to_string());
                         meta_map.insert("type".to_string(), m.element_type.as_str().to_string());

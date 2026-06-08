@@ -6,7 +6,7 @@
 
 ## Context
 
-Cosmo currently processes OSM nodes and ways but ignores relations entirely (`Element::Relation(_) => { // TODO }`). This means:
+Before 0.2.0, Cosmo processed OSM nodes and ways but ignored relations entirely (`Element::Relation(_) => { /* no-op */ }`). This meant:
 
 - Administrative boundaries (countries, states, cities) are not extracted
 - Large buildings modeled as multipolygon relations are missing
