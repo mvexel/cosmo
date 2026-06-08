@@ -1,0 +1,33 @@
+# MapRoulette challenge: named shops / amenities not updated in the past 5 years.
+#
+# Usage:
+#   cosmo convert --input region.osm.pbf \
+#     --filters examples/maproulette/stale-shops-amenities-maproulette.yml \
+#     --format maproulette \
+#     --output stale_shops_amenities.maproulette.geojson
+#
+# Upload the output file to MapRoulette as a "Line by Line" challenge.
+# The maproulette format produces RFC 7464 records (RS-delimited
+# FeatureCollections, one per line) as required by MapRoulette.
+
+table:
+  name: stale_named_amenities_shops
+  filter: '(shop | amenity) & name & meta:timestamp < "2016-06-07"'
+  geometry:
+    node: true
+    closed_way: centroid
+  columns:
+    - name: osm_id
+      source: meta:id
+    - name: osm_type
+      source: meta:type
+    - name: name
+      source: tag:name
+    - name: edited_at
+      source: meta:timestamp
+    - name: osm_shop
+      source: tag:shop
+    - name: osm_amenity
+      source: tag:amenity
+    - name: last_edited_by
+      source: meta:user
