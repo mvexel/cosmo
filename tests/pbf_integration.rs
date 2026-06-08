@@ -1278,8 +1278,7 @@ tables:
 
 #[test]
 fn relation_default_false_skips_relations() {
-    // Default geometry config has relation: false (via default_true serde)
-    // Actually, the default for relation is false per GeometryConfig::default()
+    // Default geometry config has relation: false.
     let yaml = r#"
 tables:
   buildings:
