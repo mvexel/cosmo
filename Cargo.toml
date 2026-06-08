@@ -3,6 +3,14 @@ name = "cosmo"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88.0"
+description = "Convert OSM PBF files to GeoJSON, GeoJSONL, GeoParquet, CSV, and MapRoulette task formats with declarative YAML and CEL filtering."
+license = "ISC"
+repository = "https://codeberg.org/mvexel/cosmo"
+homepage = "https://codeberg.org/mvexel/cosmo"
+documentation = "https://codeberg.org/mvexel/cosmo/src/branch/main/docs/filter_yaml_guide.md"
+keywords = ["osm", "openstreetmap", "geojson", "geoparquet", "cli"]
+categories = ["command-line-utilities", "science::geo"]
+exclude = [".forgejo/**", ".mise.toml", "AGENTS.md", "CLAUDE.md", "docs/worklog.md"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -17,7 +25,7 @@ geozero = { version = "0.15.1", features = ["with-geo", "with-wkb", "with-wkt"] 
 csv = "1.3"
 memmap2 = "0.9.9"
 libc = "0.2"
-osmpbf = { version = "0.3.*", git = "https://github.com/brad-richardson/osmpbf.git", branch = "async-blob-reader" }
+osmpbf = "0.3.8"
 parquet = "57.1.0"
 rayon = "1.10"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -1290,8 +1290,9 @@ dependencies = [
 
 [[package]]
 name = "osmpbf"
-version = "0.3.4"
-source = "git+https://github.com/brad-richardson/osmpbf.git?branch=async-blob-reader#9577cc56cf75c4acc74ce5af0a00595cae98d725"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d689d6e9f254bbd63893ce00a27147e41fe94bf3abca70f85b5345afb3cb728"
 dependencies = [
  "byteorder",
  "flate2",
