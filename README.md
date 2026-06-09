@@ -18,7 +18,17 @@ Why not use...
 
 There are many tools that fill the niche "I have OSM data but I want it in another format and transformed". Compare them and use what best fits your needs.
 
+## Next version
+
+0.2.0 is coming. It's on the [0.2.0 branch](https://codeberg.org/mvexel/cosmo/src/branch/0.2.0). 0.2.0 is stable enough for day to day use in my experience. 0.2.0 adds some new features: 
+- A `MapRoulette` sink - A flavor of GeoJSON to create tasks in MapRoulette
+- Limited relations support
+- Bounding box filtering
+Also cleaned up the code and removed some undocumented filter paths. These are breaking changes if you were using these paths. See the [Changelog](CHANGELOG.md) for details.
+
 ## Quick Start
+
+> `just` commands are available for some common operations, see [justfile](justfile) for details.
 
 ### Installation
 
@@ -63,7 +73,7 @@ table:
 
 ### Convert Command
 
-The primary command for converting OSM PBF files:
+Convert and filter an OSM PBF file.
 
 ```bash
 cosmo convert [OPTIONS]
@@ -100,7 +110,7 @@ OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates
 | `--node-cache-max-nodes <N>` | Maximum node ID to allocate address space for (dense mode) | 16,000,000,000 |
 
 **Cache Modes:**
-- **auto** - Runs a node ID pre-scan, then selects `memory` for small inputs, `sparse` for sorted sparse ID distributions, or `dense` when direct indexing is smaller or sparse is unavailable
+- **auto** - Runs a node ID pre-scan, then selects `memory` for small inputs, `sparse` for sorted sparse ID distributions, or `dense` when direct indexing is smaller or sparse is unavailable. If you're converting a large PBF, set `--node-cache-mode` explicitly to avoid the initial node pre-scan.
 - **sparse** - Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. **Requires sorted input** - PBF files from OSM/GeoFabrik are sorted; use `osmium sort` if unsure
 - **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for dense node ID coverage or unsorted inputs that do not fit memory. Auto mode sizes dense caches from the pre-scanned maximum node ID; explicit dense mode uses `--node-cache-max-nodes`. Use `--node-cache` to place it on a large disk
 - **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). Auto mode only selects it for inputs with at most 1,000,000 nodes; for planet processing you'd need 384GB+ RAM
@@ -179,6 +189,15 @@ Extract data from OSM features:
 **Column Types:** `string` (default), `integer`, `float`, `json`
 
 **See the [Filter YAML Guide](docs/filter_yaml_guide.md#column-sources) for details and advanced features**
+
+### Spatial Filtering
+
+In addition to tag-based filtering, the `--bbox min_lon,min_lat,max_lon,max_lat` option restricts output to features whose resolved geometry intersects a bounding box (see [Common Options](#common-options)). It filters by intersection only — it does not clip geometries or produce a smaller PBF; use `osmium extract` first when you need a topology-preserving cut.
+
+```bash
+cosmo convert -i utah-latest.osm.pbf -f config.yaml -o pois.geojsonl \
+  --bbox -112.1,40.5,-111.8,40.8
+```
 
 ## Output Formats
 
