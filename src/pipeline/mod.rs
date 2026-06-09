@@ -170,46 +170,44 @@ pub fn build_feature_row(
             ColumnSource::ConstInteger(value) => Some(ColumnValue::Integer(*value)),
             ColumnSource::ConstFloat(value) => Some(ColumnValue::Float(*value)),
             ColumnSource::ConstJson(value) => Some(ColumnValue::Json(value.clone())),
-            ColumnSource::Cel(program) => {
-                match metadata {
-                    Some(m) => {
-                        let mut meta_map = HashMap::new();
-                        meta_map.insert("id".to_string(), m.id.to_string());
-                        meta_map.insert("type".to_string(), m.element_type.as_str().to_string());
-                        if let Some(v) = &m.version {
-                            meta_map.insert("version".to_string(), v.to_string());
-                        }
-                        if let Some(t) = m.timestamp_millis.and_then(format_timestamp_millis) {
-                            meta_map.insert("timestamp".to_string(), t);
-                        }
-
-                        let ctx = crate::expr::CelContext {
-                            tags,
-                            meta: &meta_map,
-                        };
-                        match evaluate_cel(program, &ctx) {
-                            Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
-                            Err(e) => {
-                                tracing::debug!("CEL evaluation failed: {}", e);
-                                None
-                            }
-                        }
+            ColumnSource::Cel(program) => match metadata {
+                Some(m) => {
+                    let mut meta_map = HashMap::new();
+                    meta_map.insert("id".to_string(), m.id.to_string());
+                    meta_map.insert("type".to_string(), m.element_type.as_str().to_string());
+                    if let Some(v) = &m.version {
+                        meta_map.insert("version".to_string(), v.to_string());
                     }
-                    None => {
-                        let ctx = crate::expr::CelContext {
-                            tags,
-                            meta: &HashMap::new(),
-                        };
-                        match evaluate_cel(program, &ctx) {
-                            Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
-                            Err(e) => {
-                                tracing::debug!("CEL evaluation failed: {}", e);
-                                None
-                            }
+                    if let Some(t) = m.timestamp_millis.and_then(format_timestamp_millis) {
+                        meta_map.insert("timestamp".to_string(), t);
+                    }
+
+                    let ctx = crate::expr::CelContext {
+                        tags,
+                        meta: &meta_map,
+                    };
+                    match evaluate_cel(program, &ctx) {
+                        Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
+                        Err(e) => {
+                            tracing::debug!("CEL evaluation failed: {}", e);
+                            None
                         }
                     }
                 }
-            }
+                None => {
+                    let ctx = crate::expr::CelContext {
+                        tags,
+                        meta: &HashMap::new(),
+                    };
+                    match evaluate_cel(program, &ctx) {
+                        Ok(v) => cel_value_to_string(&v).map(ColumnValue::String),
+                        Err(e) => {
+                            tracing::debug!("CEL evaluation failed: {}", e);
+                            None
+                        }
+                    }
+                }
+            },
         };
 
         if let Some(val) = value {
@@ -1260,7 +1258,7 @@ mod tests {
             None,
             &config,
         );
-        assert!(row.columns.get("lanes").is_none());
+        assert!(!row.columns.contains_key("lanes"));
     }
 
     #[test]

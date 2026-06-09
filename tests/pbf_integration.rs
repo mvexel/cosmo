@@ -654,7 +654,7 @@ table:
       source: meta:id
       type: string
 "#;
-    assert_eq!(run_cosmo(&filtered).len(), run_cosmo(baseline).len());
+    assert_eq!(run_cosmo(filtered).len(), run_cosmo(baseline).len());
 }
 
 #[test]
