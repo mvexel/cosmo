@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **3-pass architecture** for planet-scale relation processing: pass 0 scans relation member way IDs, pass 1 collects only those ways, pass 2 processes all elements. Skipped when no table enables relations.
 - **Constant column source** (`source: const:<value>`): emits typed literal values without compiling/evaluating CEL per feature.
 - **Bounding box output filter** (`--bbox min_lon,min_lat,max_lon,max_lat`): emits only features whose resolved geometry intersects the bbox, without clipping geometry or replacing `osmium extract` for topology-preserving PBF cuts.
-- Added example filter for MapRoulette challenges (`examples/maproulette/business-missing-phone.yml`).
-- Added example filter for building extraction with relations (`examples/buildings.yaml`).
+- **Metadata filter predicates**: filter on OSM metadata fields such as `meta:id`, `meta:type`, `meta:version`, `meta:timestamp`, `meta:uid`, and `meta:user`.
+- Added warnings when filters or columns depend on `meta:user`/`meta:uid` but the input PBF appears to have stripped user metadata.
+- Added example filters for MapRoulette challenges, building extraction with relations, landuse, recent buildings, and user edit time ranges.
 - Added `closed_way: false` support to exclude closed ways independently from open ways.
 - Added regression coverage for `way: false` combined with `closed_way: polygon`, ensuring closed-way polygons are still emitted.
 - Added validation coverage for rejected geometry forms:
@@ -31,11 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Standardized the public filter interface on the string DSL, while keeping `filter: {}` as the documented match-all shorthand.
 - Kept the raw-config to compiled-config phase split so filters, mappings, and CEL expressions are parsed once before PBF processing.
 - Replaced the `winnow`-based tokenizer with a small purpose-built Rust lexer for the existing filter DSL.
+- Metadata support now includes the element `type` field for column sources, all-metadata JSON output, filter predicates, and CEL metadata context.
 - Updated open-way geometry semantics so `way` only accepts valid open-way outputs: `linestring`, `centroid`, or `false`.
 
   The `centroid` mode now means a line centroid for open ways and an area centroid for closed ways.
 - Replaced `auto` node cache selection's fixed 5 GiB file-size cutoff with a node pre-scan that chooses from real node count, max node ID, and node ID sortedness.
-- GeoParquet now omits the always-empty `properties` column unless extra properties are requested with `--all-tags`.
+- GeoParquet now omits the always-empty `properties` column by default; it is included only when `--all-tags` adds the extra tag payload.
 - Updated documentation to distinguish open-way handling from closed-way handling and to remove open-way polygon examples.
 - **BREAKING:** Updated the declared Rust minimum version to 1.88.0 to match the current dependency graph.
 - Eliminated `coords.clone()` allocation on the way-processing hot path.
