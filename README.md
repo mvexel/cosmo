@@ -10,6 +10,8 @@
 
 Your favorite drink, now as a command line tool! This one won't give you a buzz, but it will convert your OSM PBF files into a bunch of other formats with really good filtering, which is arguably more useful.
 
+**Before you clone**: If you're up for it, try the 0.2.0 branch - it has relation support, improved filtering, and MapRoulette task JSON output support, as well as an automatic file pre-scan to determine the optimal node cache strategy. It may be a little while before I merge this branch; this is my first Rust project, and I want to ensure it's stable.
+
 Why not use...
 
 - **osmium**: Equally fast. Filtering is very basic. Only OSM output formats.
