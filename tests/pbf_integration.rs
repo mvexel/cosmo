@@ -14,13 +14,13 @@ fn fixture_path() -> PathBuf {
 }
 
 fn write_temp_filters(contents: &str) -> PathBuf {
+    // Parallel test threads share the pid and can observe identical clock
+    // readings, so a monotonic counter is required for unique filenames.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    path.push(format!("cosmo_filters_{pid}_{nanos}.yaml"));
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.push(format!("cosmo_filters_{pid}_{seq}.yaml"));
     std::fs::write(&path, contents).expect("write filters yaml");
     path
 }
