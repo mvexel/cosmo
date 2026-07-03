@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows pre-1.0 semantic versioning.
 
-## [Unreleased]
+## [0.2.0] - 2026-07-04
 
 ### Added
 
@@ -63,5 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed docs that previously implied open ways could safely be emitted as polygons.
 - Fixed `relation` geometry config defaulting to `true` — now defaults to `false` so existing configs are unaffected.
 - Fixed dense node cache SIGBUS on large inputs when the temporary mmap cache landed on tmpfs-backed `/tmp`: dense temp caches now default to `/var/tmp` unless `TMPDIR` is set, and dense cache creation fails fast when the target filesystem lacks enough free space.
+- Fixed `meta:*` column sources ignoring the declared column `type`: `integer` and `float` meta columns (e.g. `meta:version`, `meta:id`) now emit typed values instead of strings, matching tag column behavior.
+- Fixed flaky integration tests caused by parallel test threads colliding on the temp filter file name.
 
-[Unreleased]: https://codeberg.org/mvexel/cosmo/compare/v0.1.0...HEAD
+[0.2.0]: https://codeberg.org/mvexel/cosmo/compare/v0.1.0...v0.2.0

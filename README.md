@@ -18,14 +18,6 @@ Why not use...
 
 There are many tools that fill the niche "I have OSM data but I want it in another format and transformed". Compare them and use what best fits your needs.
 
-## Next version
-
-0.2.0 is coming. It's on the [0.2.0 branch](https://codeberg.org/mvexel/cosmo/src/branch/0.2.0). 0.2.0 is stable enough for day to day use in my experience. 0.2.0 adds some new features: 
-- A `MapRoulette` sink - A flavor of GeoJSON to create tasks in MapRoulette
-- Limited relations support
-- Bounding box filtering
-Also cleaned up the code and removed some undocumented filter paths. These are breaking changes if you were using these paths. See the [Changelog](CHANGELOG.md) for details.
-
 ## Quick Start
 
 > `just` commands are available for some common operations, see [justfile](justfile) for details.
