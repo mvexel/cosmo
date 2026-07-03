@@ -133,7 +133,17 @@ pub fn build_feature_row(
             }),
             ColumnSource::Meta(key) => {
                 if let Some(m) = metadata {
-                    extract_meta_value(key, Some(m)).map(ColumnValue::String)
+                    extract_meta_value(key, Some(m)).map(|v| match col.col_type {
+                        ColumnType::Integer => v
+                            .parse::<i64>()
+                            .map(ColumnValue::Integer)
+                            .unwrap_or_else(|_| ColumnValue::String(v)),
+                        ColumnType::Float => v
+                            .parse::<f64>()
+                            .map(ColumnValue::Float)
+                            .unwrap_or_else(|_| ColumnValue::String(v)),
+                        _ => ColumnValue::String(v),
+                    })
                 } else {
                     None
                 }
@@ -1076,6 +1086,52 @@ mod tests {
         assert!(matches!(
             row.columns.get("timestamp"),
             Some(ColumnValue::String(value)) if value == "2024-01-01T00:00:00Z"
+        ));
+    }
+
+    #[test]
+    fn meta_column_with_integer_type_produces_typed_value() {
+        let columns = vec![CompiledColumn {
+            name: "version".to_string(),
+            source: ColumnSource::Meta("version".to_string()),
+            col_type: ColumnType::Integer,
+        }];
+        let metadata = MetadataFields {
+            id: 1,
+            element_type: ElementType::Node,
+            visible: Some(true),
+            version: Some(7),
+            changeset: Some(2),
+            timestamp_millis: Some(1_704_067_200_000),
+            uid: Some(3),
+            user: Some("tester".to_string()),
+        };
+        let mut tables = HashMap::new();
+        tables.insert(
+            "test".to_string(),
+            CompiledTable {
+                name: "test".to_string(),
+                filter: crate::dsl::FilterAst::True,
+                columns: Vec::new(),
+                geometry: crate::config::GeometryConfig::default(),
+            },
+        );
+        let config = CompiledConfig {
+            tables,
+            mappings: HashMap::new(),
+        };
+        let row = build_feature_row(
+            Geometry::Point(Point::new(0.0, 0.0)),
+            &HashMap::new(),
+            &columns,
+            &RuntimeConfig::default(),
+            Some(&metadata),
+            None,
+            &config,
+        );
+        assert!(matches!(
+            row.columns.get("version"),
+            Some(ColumnValue::Integer(7))
         ));
     }
 
