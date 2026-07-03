@@ -731,7 +731,10 @@ mod tests {
     fn dense_temp_store_rejects_cache_larger_than_available_space() {
         let temp_dir = tempfile::tempdir_in(default_dense_temp_dir()).unwrap();
         let available = available_bytes(temp_dir.path()).unwrap();
-        let too_many_nodes = available / NODE_SIZE as u64 + 1;
+        // Ask for double the free space: the constructor re-measures free
+        // space, so a margin of a single node races with disk churn from
+        // concurrent tests.
+        let too_many_nodes = (available / NODE_SIZE as u64) * 2 + 1;
 
         let err = match NodeStoreWriter::new_dense_temp_in(temp_dir.path(), too_many_nodes) {
             Ok(_) => panic!("dense cache larger than available space unexpectedly succeeded"),
