@@ -18,5 +18,5 @@ mod lexer;
 mod parser;
 
 pub use ast::*;
-pub use eval::evaluate_filter;
+pub use eval::{evaluate_filter, evaluate_filter_with_context, FilterContext};
 pub use parser::parse_filter;

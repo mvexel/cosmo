@@ -14,13 +14,13 @@ fn fixture_path() -> PathBuf {
 }
 
 fn write_temp_filters(contents: &str) -> PathBuf {
+    // Parallel test threads share the pid and can observe identical clock
+    // readings, so a monotonic counter is required for unique filenames.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    path.push(format!("cosmo_filters_{pid}_{nanos}.yaml"));
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.push(format!("cosmo_filters_{pid}_{seq}.yaml"));
     std::fs::write(&path, contents).expect("write filters yaml");
     path
 }
@@ -48,7 +48,7 @@ fn run_cosmo(filters_yaml: &str) -> Vec<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cosmo failed: {}", stderr);
+        panic!("cosmo failed: {stderr}");
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -82,7 +82,7 @@ fn run_cosmo_to_file(filters_yaml: &str, format: &str, output_path: &Path) {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cosmo failed: {}", stderr);
+        panic!("cosmo failed: {stderr}");
     }
 }
 
@@ -115,9 +115,7 @@ fn extracts_tree_nodes() {
     let filters = r#"
 table:
   name: trees
-  filter:
-    tag: "natural"
-    value: "tree"
+  filter: 'natural=tree'
   geometry:
     node: true
     way: false
@@ -136,8 +134,7 @@ fn extracts_lanes_tagged_ways() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -152,12 +149,64 @@ table:
 }
 
 #[test]
+fn auto_node_cache_uses_prescan_stats() {
+    let filters = r#"
+table:
+  name: lanes
+  filter: 'lanes'
+  geometry:
+    node: false
+    way: "linestring"
+    relation: false
+  columns:
+    - name: "lanes"
+      source: "tag:lanes"
+      type: "string"
+"#;
+    let filters_path = write_temp_filters(filters);
+    let exe = env!("CARGO_BIN_EXE_cosmo");
+
+    let output = Command::new(exe)
+        .arg("-v")
+        .arg("convert")
+        .arg("--input")
+        .arg(fixture_path())
+        .arg("--output")
+        .arg("-")
+        .arg("--format")
+        .arg("geojsonl")
+        .arg("--filters")
+        .arg(&filters_path)
+        .output()
+        .expect("run cosmo");
+
+    let _ = std::fs::remove_file(&filters_path);
+
+    assert!(output.status.success(), "cosmo should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(lines, 49);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Pre-scan: collecting node cache statistics"),
+        "auto mode should run node cache pre-scan; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Node cache: memory (auto-selected"),
+        "fixture should auto-select memory from pre-scan stats; stderr: {stderr}"
+    );
+}
+
+#[test]
 fn writes_parquet_output() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -187,8 +236,7 @@ fn mmap_cache_errors_on_small_size() {
     let filters = r#"
 table:
   name: lanes
-  filter:
-    tag: "lanes"
+  filter: 'lanes'
   geometry:
     node: false
     way: "linestring"
@@ -326,6 +374,44 @@ table:
 }
 
 #[test]
+fn closed_way_polygon_with_open_ways_disabled_still_outputs_polygons() {
+    // Regression for issue #1: `way: false` combined with `closed_way: polygon`
+    // must still emit closed-way polygons instead of an empty file.
+    let filters = r#"
+table:
+  name: buildings
+  filter: 'building'
+  geometry:
+    node: false
+    way: false
+    closed_way: polygon
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+
+    assert!(
+        !features.is_empty(),
+        "way: false with closed_way: polygon should still extract closed-way polygons"
+    );
+
+    let non_polygon_features: Vec<_> = features
+        .iter()
+        .filter(|f| geometry_type(f) != "Polygon")
+        .collect();
+
+    assert!(
+        non_polygon_features.is_empty(),
+        "all emitted features should be Polygons, found {} non-Polygon",
+        non_polygon_features.len()
+    );
+}
+
+#[test]
 fn way_linestring_outputs_linestrings() {
     // Open ways (like roads) with way: linestring should output LineStrings
     let filters = r#"
@@ -436,13 +522,11 @@ table:
         );
         assert!(
             version.is_some() && !version.unwrap().is_null(),
-            "version should be populated for feature with osm_id {:?}",
-            osm_id
+            "version should be populated for feature with osm_id {osm_id:?}"
         );
         assert!(
             timestamp.is_some() && !timestamp.unwrap().is_null(),
-            "timestamp should be populated for feature with osm_id {:?}",
-            osm_id
+            "timestamp should be populated for feature with osm_id {osm_id:?}"
         );
     }
 }
@@ -475,10 +559,170 @@ table:
 
         assert!(
             osm_id.parse::<i64>().is_ok(),
-            "osm_id '{}' should be a valid integer",
-            osm_id
+            "osm_id '{osm_id}' should be a valid integer"
         );
     }
+}
+
+#[test]
+fn metadata_timestamp_filter_excludes_future_features() {
+    let filters = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant & meta:timestamp>"2999-01-01T00:00:00Z"'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let lines = run_cosmo(filters);
+    assert!(
+        lines.is_empty(),
+        "future timestamp filter should exclude all fixture restaurants"
+    );
+}
+
+#[test]
+fn metadata_version_filter_keeps_versioned_features() {
+    let baseline = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let filtered = r#"
+table:
+  name: pois
+  filter: 'amenity=restaurant & meta:version>=1'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let baseline_lines = run_cosmo(baseline);
+    let filtered_lines = run_cosmo(filtered);
+    assert!(
+        !baseline_lines.is_empty(),
+        "fixture should contain restaurant amenities"
+    );
+    assert_eq!(filtered_lines.len(), baseline_lines.len());
+}
+
+#[test]
+fn metadata_type_filter_matches_nodes() {
+    let baseline = r#"
+table:
+  name: trees
+  filter: 'natural=tree'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    let filtered = r#"
+table:
+  name: trees
+  filter: 'natural=tree & meta:type=node'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: osm_id
+      source: meta:id
+      type: string
+"#;
+    assert_eq!(run_cosmo(filtered).len(), run_cosmo(baseline).len());
+}
+
+#[test]
+fn metadata_visible_filter_matches_visible_fixture_features() {
+    let filters = r#"
+table:
+  name: trees
+  filter: 'natural=tree & meta:visible=true'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: visible
+      source: meta:visible
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+    assert!(!features.is_empty(), "fixture should contain visible trees");
+    assert!(features.iter().all(|feature| {
+        get_property(feature, "visible") == Some(&Value::String("true".to_string()))
+    }));
+}
+
+#[test]
+fn const_column_sources_emit_typed_values() {
+    let filters = r#"
+table:
+  name: trees
+  filter: 'natural=tree'
+  geometry:
+    node: true
+    way: false
+    relation: false
+  columns:
+    - name: source
+      source: const:cosmo
+      type: string
+    - name: priority
+      source: const:7
+      type: integer
+    - name: score
+      source: const:2.5
+      type: float
+    - name: payload
+      source: 'const:{"kind":"fixed"}'
+      type: json
+"#;
+    let lines = run_cosmo(filters);
+    let features = parse_features(&lines);
+    let first = features.first().expect("fixture should contain trees");
+
+    assert_eq!(
+        get_property(first, "source"),
+        Some(&Value::String("cosmo".to_string()))
+    );
+    assert_eq!(
+        get_property(first, "priority"),
+        Some(&Value::Number(7.into()))
+    );
+    assert_eq!(
+        get_property(first, "score").and_then(Value::as_f64),
+        Some(2.5)
+    );
+    assert_eq!(
+        get_property(first, "payload").and_then(|value| value.get("kind")),
+        Some(&Value::String("fixed".to_string()))
+    );
 }
 
 // =============================================================================
@@ -516,8 +760,7 @@ table:
 
         assert!(
             amenity == "restaurant" || amenity == "cafe",
-            "amenity should be 'restaurant' or 'cafe', got '{}'",
-            amenity
+            "amenity should be 'restaurant' or 'cafe', got '{amenity}'"
         );
     }
 }
@@ -590,8 +833,7 @@ table:
 
         assert!(
             shop == "bakery" || shop == "books" || shop == "florist",
-            "shop should be 'bakery', 'books', or 'florist', got '{}'",
-            shop
+            "shop should be 'bakery', 'books', or 'florist', got '{shop}'"
         );
     }
 }
@@ -771,9 +1013,7 @@ fn geojson_output_is_valid_feature_collection() {
     let filters = r#"
 table:
   name: trees
-  filter:
-    tag: "natural"
-    value: "tree"
+  filter: 'natural=tree'
   geometry:
     node: true
     way: false
@@ -879,7 +1119,9 @@ table:
 
 #[test]
 fn nodes_only_mode_skips_ways() {
-    // When way: false, we should only get nodes even if ways match the filter
+    // When both way and closed_way are disabled, we should only get nodes even
+    // if ways match the filter. (closed_way: false is required because
+    // closed_way governs closed ways independently of the open-way setting.)
     let filters = r#"
 table:
   name: amenities
@@ -887,6 +1129,7 @@ table:
   geometry:
     node: true
     way: false
+    closed_way: false
     relation: false
   columns:
     - name: osm_id
@@ -903,7 +1146,7 @@ table:
         assert_eq!(
             geometry_type(feature),
             "Point",
-            "with way: false, all features should be Points"
+            "with way: false and closed_way: false, all features should be Points"
         );
     }
 }
@@ -955,9 +1198,163 @@ table:
 
         assert!(
             valid_categories.contains(&category),
-            "category should be one of {:?}, got '{}'",
-            valid_categories,
-            category
+            "category should be one of {valid_categories:?}, got '{category}'"
         );
     }
+}
+
+// =============================================================================
+// Relation / Multipolygon Tests
+// =============================================================================
+
+#[test]
+fn relation_multipolygon_outputs_polygons() {
+    // r7702932 is a building with outer + inner (hole)
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+      - name: building
+        source: "tag:building"
+"#;
+    let lines = run_cosmo(yaml);
+    assert!(
+        !lines.is_empty(),
+        "should extract at least one multipolygon relation"
+    );
+
+    for line in &lines {
+        let feature: Value = serde_json::from_str(line).expect("valid JSON");
+        let geom_type = feature["geometry"]["type"].as_str().unwrap();
+        assert!(
+            geom_type == "Polygon" || geom_type == "MultiPolygon",
+            "relation geometry should be Polygon or MultiPolygon, got {geom_type}"
+        );
+    }
+}
+
+#[test]
+fn relation_with_inner_ring_has_hole() {
+    // r7702932: Mountain Courtyard Apartments — outer ring + inner courtyard
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building=apartments"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(
+        lines.len(),
+        1,
+        "should match exactly one apartments relation"
+    );
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let geom = &feature["geometry"];
+    assert_eq!(geom["type"].as_str().unwrap(), "Polygon");
+
+    let coords = geom["coordinates"].as_array().unwrap();
+    assert!(
+        coords.len() >= 2,
+        "polygon should have exterior + at least one interior ring (hole), got {} ring(s)",
+        coords.len()
+    );
+}
+
+#[test]
+fn relation_default_false_skips_relations() {
+    // Default geometry config has relation: false.
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+    columns:
+      - name: name
+        source: "tag:name"
+"#;
+    let lines = run_cosmo(yaml);
+    // With node, way, and closed_way all disabled and relation defaulting to false,
+    // nothing should match
+    assert!(
+        lines.is_empty(),
+        "with all geometry modes disabled (relation defaults to false), no output expected"
+    );
+}
+
+#[test]
+fn relation_multi_way_outer_ring_assembles() {
+    // r13211139: natural=water with 2 outer ways forming one ring
+    let yaml = r#"
+tables:
+  water:
+    filter: "natural=water"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: natural
+        source: "tag:natural"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(lines.len(), 1, "should match exactly one water relation");
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let geom_type = feature["geometry"]["type"].as_str().unwrap();
+    // Two outer ways should be assembled into a single polygon ring
+    assert_eq!(
+        geom_type, "Polygon",
+        "two-way outer ring should assemble into a Polygon"
+    );
+}
+
+#[test]
+fn relation_metadata_is_populated() {
+    let yaml = r#"
+tables:
+  buildings:
+    filter: "building=apartments"
+    geometry:
+      node: false
+      way: false
+      closed_way: false
+      relation: true
+    columns:
+      - name: name
+        source: "tag:name"
+      - name: osm_id
+        source: "meta:id"
+"#;
+    let lines = run_cosmo(yaml);
+    assert_eq!(lines.len(), 1);
+
+    let feature: Value = serde_json::from_str(&lines[0]).expect("valid JSON");
+    let props = &feature["properties"];
+    assert_eq!(
+        props["name"].as_str().unwrap(),
+        "Mountain Courtyard Apartments"
+    );
+    // Relation ID should be populated from metadata
+    let osm_id = props["osm_id"].as_str().unwrap();
+    assert_eq!(osm_id, "7702932");
 }

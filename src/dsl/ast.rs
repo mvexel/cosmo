@@ -1,5 +1,6 @@
 //! AST types for the filter DSL.
 
+use crate::metadata::MetadataField;
 use std::fmt;
 
 /// Root filter expression.
@@ -16,6 +17,22 @@ pub enum FilterAst {
         key: String,
         op: CompareOp,
         value: f64,
+    },
+
+    /// Metadata existence check: `meta:user` or `!meta:user`
+    MetadataExists { field: MetadataField, negated: bool },
+
+    /// Metadata string/boolean value match: `meta:type=node|way`
+    MetadataMatch {
+        field: MetadataField,
+        values: Vec<TagValue>,
+    },
+
+    /// Typed metadata comparison: `meta:version>=2`, `meta:timestamp>="2024-01-01"`
+    MetadataCompare {
+        field: MetadataField,
+        op: CompareOp,
+        value: MetadataCompareValue,
     },
 
     /// Boolean AND: `expr1 & expr2`
@@ -40,6 +57,12 @@ pub enum TagValue {
     Any,
     /// Glob pattern (e.g., `*_link`)
     Glob(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataCompareValue {
+    Integer(i64),
+    TimestampMillis(i64),
 }
 
 /// Numeric comparison operator.
@@ -103,6 +126,30 @@ impl FilterAst {
             }
             FilterAst::Not(inner) => FilterAst::Not(Box::new(inner.simplify())),
             other => other,
+        }
+    }
+
+    pub fn uses_metadata(&self) -> bool {
+        match self {
+            Self::MetadataExists { .. }
+            | Self::MetadataMatch { .. }
+            | Self::MetadataCompare { .. } => true,
+            Self::And(exprs) | Self::Or(exprs) => exprs.iter().any(Self::uses_metadata),
+            Self::Not(inner) => inner.uses_metadata(),
+            _ => false,
+        }
+    }
+
+    pub fn uses_metadata_field(&self, target: MetadataField) -> bool {
+        match self {
+            Self::MetadataExists { field, .. }
+            | Self::MetadataMatch { field, .. }
+            | Self::MetadataCompare { field, .. } => *field == target,
+            Self::And(exprs) | Self::Or(exprs) => {
+                exprs.iter().any(|expr| expr.uses_metadata_field(target))
+            }
+            Self::Not(inner) => inner.uses_metadata_field(target),
+            _ => false,
         }
     }
 }

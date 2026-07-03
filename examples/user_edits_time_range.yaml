@@ -1,0 +1,21 @@
+# Things edited by `mvexel` between 2026-01-01 and 2026-04-01
+table:
+  name: mvexel-q1-2026-edits
+  filter: 'meta:timestamp >= "2026-01-01" & meta:timestamp < "2026-04-01" & meta:user = "mvexel"'
+  geometry:
+    node: true
+    way: centroid
+    closed_way: centroid
+    relation: true
+  columns:
+    - name: name
+      source: tag:name
+    - name: edited_at
+      source: meta:timestamp
+    - name: edited_by
+      source: meta:user
+    - name: osm_type
+      source: meta:type
+    - name: osm_id
+      source: meta:id
+      type: integer

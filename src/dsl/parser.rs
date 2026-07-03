@@ -12,8 +12,11 @@
 //! value_list = value ("|" value)*
 //! value      = IDENT | NUMBER | "*"
 
-use super::ast::{CompareOp, FilterAst, TagValue};
+use super::ast::{CompareOp, FilterAst, MetadataCompareValue, TagValue};
 use super::lexer::{tokenize, Token};
+use crate::metadata::{MetadataField, MetadataFieldKind};
+use time::format_description::well_known::Rfc3339;
+use time::{Date, Month, OffsetDateTime, Time};
 
 /// Parser state.
 struct Parser {
@@ -41,7 +44,7 @@ impl Parser {
         if tok == expected {
             Ok(())
         } else {
-            Err(format!("Expected {:?}, got {:?}", expected, tok))
+            Err(format!("Expected {expected:?}, got {tok:?}"))
         }
     }
 
@@ -100,8 +103,15 @@ impl Parser {
                     }
                     Some(Token::And) | Some(Token::Or) | Some(Token::RParen) | Some(Token::Eof)
                     | None => {
-                        // Simple negated existence: !tag
+                        // Simple negated existence: !tag or !meta:field
                         self.advance(); // consume ident
+                        if let Some(field_name) = key.strip_prefix("meta:") {
+                            let field = field_name.parse::<MetadataField>()?;
+                            return Ok(FilterAst::MetadataExists {
+                                field,
+                                negated: true,
+                            });
+                        }
                         return Ok(FilterAst::TagExists { key, negated: true });
                     }
                     _ => {
@@ -130,36 +140,29 @@ impl Parser {
             }
             Token::Ident(_) => self.parse_tag_expr(),
             Token::Eof => Ok(FilterAst::True),
-            other => Err(format!("Unexpected token: {:?}", other)),
+            other => Err(format!("Unexpected token: {other:?}")),
         }
     }
 
-    /// Parse tag expression: IDENT (compare_op value_list)?
+    /// Parse tag or metadata expression: IDENT (compare_op value_list)?
     fn parse_tag_expr(&mut self) -> Result<FilterAst, String> {
         let key = match self.advance() {
             Token::Ident(k) => k,
-            other => return Err(format!("Expected identifier, got {:?}", other)),
+            other => return Err(format!("Expected identifier, got {other:?}")),
         };
 
-        // Check for comparison operator
-        let op = match self.peek() {
-            Token::Eq => Some(CompareOp::Eq),
-            Token::Ne => Some(CompareOp::Ne),
-            Token::Lt => Some(CompareOp::Lt),
-            Token::Le => Some(CompareOp::Le),
-            Token::Gt => Some(CompareOp::Gt),
-            Token::Ge => Some(CompareOp::Ge),
-            _ => None,
-        };
+        let op = self.peek_compare_op();
+
+        if let Some(field_name) = key.strip_prefix("meta:") {
+            let field = field_name.parse::<MetadataField>()?;
+            return self.parse_metadata_expr(field, op);
+        }
 
         match op {
-            None => {
-                // Simple existence check
-                Ok(FilterAst::TagExists {
-                    key,
-                    negated: false,
-                })
-            }
+            None => Ok(FilterAst::TagExists {
+                key,
+                negated: false,
+            }),
             Some(CompareOp::Eq) => {
                 self.advance(); // consume =
                 let values = self.parse_value_list()?;
@@ -167,10 +170,88 @@ impl Parser {
             }
             Some(op) => {
                 self.advance(); // consume operator
-                                // For non-equality comparisons, expect a number
                 match self.advance() {
                     Token::Number(n) => Ok(FilterAst::NumericCompare { key, op, value: n }),
-                    other => Err(format!("Expected number after {:?}, got {:?}", op, other)),
+                    other => Err(format!("Expected number after {op:?}, got {other:?}")),
+                }
+            }
+        }
+    }
+
+    fn peek_compare_op(&self) -> Option<CompareOp> {
+        match self.peek() {
+            Token::Eq => Some(CompareOp::Eq),
+            Token::Ne => Some(CompareOp::Ne),
+            Token::Lt => Some(CompareOp::Lt),
+            Token::Le => Some(CompareOp::Le),
+            Token::Gt => Some(CompareOp::Gt),
+            Token::Ge => Some(CompareOp::Ge),
+            _ => None,
+        }
+    }
+
+    fn parse_metadata_expr(
+        &mut self,
+        field: MetadataField,
+        op: Option<CompareOp>,
+    ) -> Result<FilterAst, String> {
+        match op {
+            None => Ok(FilterAst::MetadataExists {
+                field,
+                negated: false,
+            }),
+            Some(CompareOp::Eq) if field == MetadataField::Timestamp => {
+                self.advance(); // consume =
+                match self.advance() {
+                    Token::Star => Ok(FilterAst::MetadataExists {
+                        field,
+                        negated: false,
+                    }),
+                    Token::String(value) => Ok(FilterAst::MetadataCompare {
+                        field,
+                        op: CompareOp::Eq,
+                        value: MetadataCompareValue::TimestampMillis(parse_timestamp_millis(
+                            &value,
+                        )?),
+                    }),
+                    other => Err(format!(
+                        "Expected quoted timestamp after meta:timestamp=, got {other:?}"
+                    )),
+                }
+            }
+            Some(CompareOp::Eq) => {
+                self.advance(); // consume =
+                let values = self.parse_value_list()?;
+                Ok(FilterAst::MetadataMatch { field, values })
+            }
+            Some(op) => {
+                self.advance(); // consume operator
+                match field.kind() {
+                    MetadataFieldKind::Integer => match self.advance() {
+                        Token::Number(n) => Ok(FilterAst::MetadataCompare {
+                            field,
+                            op,
+                            value: MetadataCompareValue::Integer(parse_integer_literal(n)?),
+                        }),
+                        other => Err(format!(
+                            "Expected integer after metadata comparison operator {op}, got {other:?}"
+                        )),
+                    },
+                    MetadataFieldKind::Timestamp => match self.advance() {
+                        Token::String(value) => Ok(FilterAst::MetadataCompare {
+                            field,
+                            op,
+                            value: MetadataCompareValue::TimestampMillis(parse_timestamp_millis(
+                                &value,
+                            )?),
+                        }),
+                        other => Err(format!(
+                            "Expected quoted timestamp after meta:timestamp{op}, got {other:?}"
+                        )),
+                    },
+                    MetadataFieldKind::String | MetadataFieldKind::Boolean => Err(format!(
+                        "Operator {op} is not supported for this metadata field; use !(meta:<field>=\"value\") around an equality expression"
+                    )),
                 }
             }
         }
@@ -207,12 +288,11 @@ impl Parser {
         Ok(values)
     }
 
-    /// Parse a single value: IDENT | NUMBER | "*"
+    /// Parse a single value: IDENT | NUMBER | STRING | "*"
     fn parse_value(&mut self) -> Result<TagValue, String> {
         match self.advance() {
             Token::Star => Ok(TagValue::Any),
             Token::Ident(s) => {
-                // Check for glob pattern
                 if s.contains('*') {
                     Ok(TagValue::Glob(s))
                 } else {
@@ -220,9 +300,65 @@ impl Parser {
                 }
             }
             Token::Number(n) => Ok(TagValue::Exact(n.to_string())),
-            other => Err(format!("Expected value, got {:?}", other)),
+            Token::String(s) => Ok(TagValue::Exact(s)),
+            other => Err(format!("Expected value, got {other:?}")),
         }
     }
+}
+
+fn parse_integer_literal(value: f64) -> Result<i64, String> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(format!(
+            "Expected whole integer metadata value, got {value}"
+        ));
+    }
+    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err(format!("Integer metadata value out of range: {value}"));
+    }
+    Ok(value as i64)
+}
+
+fn parse_timestamp_millis(value: &str) -> Result<i64, String> {
+    if let Ok(dt) = OffsetDateTime::parse(value, &Rfc3339) {
+        return timestamp_to_millis(dt);
+    }
+
+    parse_date_only_timestamp(value)
+}
+
+fn parse_date_only_timestamp(value: &str) -> Result<i64, String> {
+    let mut parts = value.split('-');
+    let year = parts
+        .next()
+        .ok_or_else(|| timestamp_error(value))?
+        .parse::<i32>()
+        .map_err(|_| timestamp_error(value))?;
+    let month = parts
+        .next()
+        .ok_or_else(|| timestamp_error(value))?
+        .parse::<u8>()
+        .map_err(|_| timestamp_error(value))?;
+    let day = parts
+        .next()
+        .ok_or_else(|| timestamp_error(value))?
+        .parse::<u8>()
+        .map_err(|_| timestamp_error(value))?;
+    if parts.next().is_some() {
+        return Err(timestamp_error(value));
+    }
+
+    let month = Month::try_from(month).map_err(|_| timestamp_error(value))?;
+    let date = Date::from_calendar_date(year, month, day).map_err(|_| timestamp_error(value))?;
+    timestamp_to_millis(date.with_time(Time::MIDNIGHT).assume_utc())
+}
+
+fn timestamp_to_millis(dt: OffsetDateTime) -> Result<i64, String> {
+    i64::try_from(dt.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| "Timestamp is outside supported range".to_string())
+}
+
+fn timestamp_error(value: &str) -> String {
+    format!("Invalid timestamp literal '{value}'; expected quoted RFC3339 date-time or YYYY-MM-DD")
 }
 
 /// Parse a filter DSL string into an AST.
@@ -250,6 +386,7 @@ pub fn parse_filter(input: &str) -> Result<FilterAst, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::MetadataField;
 
     #[test]
     fn test_simple_existence() {
@@ -367,5 +504,64 @@ mod tests {
                 assert_eq!(values.len(), 2);
             }
         }
+    }
+
+    #[test]
+    fn test_metadata_user_match() {
+        let ast = parse_filter(r#"meta:user="Jane Doe""#).unwrap();
+        assert_eq!(
+            ast,
+            FilterAst::MetadataMatch {
+                field: MetadataField::User,
+                values: vec![TagValue::Exact("Jane Doe".into())],
+            }
+        );
+    }
+
+    #[test]
+    fn test_metadata_version_compare() {
+        let ast = parse_filter("meta:version>=2").unwrap();
+        assert_eq!(
+            ast,
+            FilterAst::MetadataCompare {
+                field: MetadataField::Version,
+                op: CompareOp::Ge,
+                value: MetadataCompareValue::Integer(2),
+            }
+        );
+    }
+
+    #[test]
+    fn test_metadata_timestamp_date_compare() {
+        let ast = parse_filter(r#"meta:timestamp>="2024-01-01""#).unwrap();
+        assert_eq!(
+            ast,
+            FilterAst::MetadataCompare {
+                field: MetadataField::Timestamp,
+                op: CompareOp::Ge,
+                value: MetadataCompareValue::TimestampMillis(1_704_067_200_000),
+            }
+        );
+    }
+
+    #[test]
+    fn test_metadata_type_alternatives() {
+        let ast = parse_filter("meta:type=node|way").unwrap();
+        assert_eq!(
+            ast,
+            FilterAst::MetadataMatch {
+                field: MetadataField::Type,
+                values: vec![
+                    TagValue::Exact("node".into()),
+                    TagValue::Exact("way".into())
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_metadata_unknown_field_rejected() {
+        let err = parse_filter("meta:unknown=1").unwrap_err();
+        assert!(err.contains("supported fields"));
     }
 }

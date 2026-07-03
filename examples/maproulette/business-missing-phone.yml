@@ -1,0 +1,31 @@
+# MapRoulette challenge: businesses missing a phone number.
+#
+# Usage:
+#   cosmo convert --input region.osm.pbf \
+#     --filters examples/maproulette/business-missing-phone.yml \
+#     --format maproulette \
+#     --output missing_phone.geojson
+#
+# Upload the output file to MapRoulette as a "Line by Line" challenge.
+# The maproulette format produces RFC 7464 records (RS-delimited
+# FeatureCollections, one per line) as required by MapRoulette.
+
+table:
+  name: missing_phone
+  filter: "(shop=* | amenity=restaurant|cafe|bar|bank|pharmacy | tourism=museum) & !phone & !contact:phone"
+  geometry:
+    node: true
+    closed_way: centroid
+  columns:
+    - name: osm_id
+      source: meta:id
+    - name: osm_type
+      source: meta:type
+    - name: name
+      source: tag:name
+    - name: amenity
+      source: tag:amenity
+    - name: shop
+      source: tag:shop
+    - name: description
+      source: "expr:has(tags.name) ? tags.name + ' does not have a phone number in OSM.' : 'This business does not have a phone number in OSM.'"

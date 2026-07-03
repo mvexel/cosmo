@@ -125,7 +125,7 @@ table:
       source: tag:opening_hours
 ```
 
-What we did here is add a handful of `column` declarations. Each `column` has a `name` and a `source`. In this example, the `source` specifies which OSM tag will populate the column (using the `tag:` prefix). But sources can also be metadata fields (`meta:`), expressions (`expr:`), mappings (`mapping:`), or aggregate data like `tags`, `meta`, or `refs`. See the [Column Sources](#column-sources) section below for all the options.
+What we did here is add a handful of `column` declarations. Each `column` has a `name` and a `source`. In this example, the `source` specifies which OSM tag will populate the column (using the `tag:` prefix). But sources can also be metadata fields (`meta:`), literal constants (`const:`), expressions (`expr:`), mappings (`mapping:`), or aggregate data like `tags`, `meta`, or `refs`. See the [Column Sources](#column-sources) section below for all the options.
 
 [GeoJSON.io](https://geojson.io/#data=data:text/x-url,https%3A%2F%2Fimages.osm.lol%2Ftoilets_v3.geojson)
 
@@ -300,6 +300,48 @@ filter: {}
 
 **Note:** Empty filters match ALL features including untagged nodes (way vertices). This creates very large output files where 70-80% of features typically have empty tags. For most use cases, filter by specific tags instead.
 
+### Metadata Filtering
+
+In addition to filtering by OSM tags, you can filter by OSM metadata fields using the `meta:` prefix:
+
+| Field | Kind | Examples |
+|---|---|---|
+| `meta:id` | integer | `meta:id=123`, `meta:id>1000` |
+| `meta:type` | string | `meta:type=node`, `meta:type=way|relation` |
+| `meta:visible` | boolean | `meta:visible=true` |
+| `meta:version` | integer | `meta:version>=2` |
+| `meta:changeset` | integer | `meta:changeset>100000000` |
+| `meta:timestamp` | timestamp | `meta:timestamp>="2024-01-01"` |
+| `meta:uid` | integer | `meta:uid=12345` |
+| `meta:user` | string | `meta:user="Jane Doe"` |
+
+Rules:
+
+- `meta:<field>` checks existence (e.g., `meta:version` matches elements that have version info).
+- `!meta:<field>` matches elements missing the field.
+- `=` uses existing exact, wildcard, glob, and `|` alternative matching.
+- Quoted values are supported for both tag and metadata equality.
+- `<`, `<=`, `>`, `>=`, and `!=` work for integer fields and `meta:timestamp`.
+- String/boolean inequality uses negation: `!(meta:user="Jane Doe")`, `!(meta:visible=true)`.
+- Timestamp values must be quoted RFC3339 date-times or `YYYY-MM-DD`; date-only means midnight UTC.
+
+```yaml
+# Only features edited on or after 2024
+filter: 'meta:timestamp >= "2024-01-01"'
+
+# Buildings with version 3+
+filter: 'building & meta:version >= 3'
+
+# Exclude deleted/invisible features
+filter: 'meta:visible=true'
+
+# Specific user's edits to restaurants
+filter: 'amenity=restaurant & meta:user="Jane Doe"'
+
+# Ways and relations only (exclude nodes)
+filter: 'meta:type=way|relation'
+```
+
 ## Column Sources
 
 Columns define what data is extracted from OSM features and how it's formatted in the output. The `source` field specifies where the data comes from.
@@ -339,6 +381,10 @@ columns:
     source: meta:id
     type: integer
 
+  # Element type (node, way, or relation)
+  - name: osm_type
+    source: meta:type
+
   # Element visibility flag
   - name: visible
     source: meta:visible
@@ -366,6 +412,30 @@ columns:
   - name: user_name
     source: meta:user
 ```
+
+### Constant Sources
+
+Add fixed literal values without running a CEL expression per feature:
+
+```yaml
+columns:
+  - name: dataset
+    source: const:buildings-v1
+
+  - name: priority
+    source: const:3
+    type: integer
+
+  - name: score
+    source: const:2.5
+    type: float
+
+  - name: payload
+    source: 'const:{"source":"manual"}'
+    type: json
+```
+
+`const:` values are parsed once when the config is loaded, using the column's declared `type`.
 
 ### JSON Aggregate Sources
 
@@ -398,6 +468,8 @@ Example output:
   "refs": [101, 102, 103, 104]
 }
 ```
+
+For GeoParquet output, these declared columns are written as first-class Parquet columns. The sink omits the extra `properties` JSON column unless `--all-tags` is enabled.
 
 ### Mapping Sources
 
@@ -565,6 +637,7 @@ CEL expressions have access to two variables:
 - `tags`: A map (dictionary) of all OSM tags (keys and values are strings)
 - `meta`: A map of metadata fields with the following keys:
   - `id` - OSM element ID (string)
+  - `type` - Element type: `node`, `way`, or `relation` (string)
   - `version` - Version number (string, may be absent)
   - `timestamp` - Last edit timestamp in ISO 8601 format (string, may be absent)
 
@@ -703,8 +776,8 @@ Control how OSM elements are converted to geometries. Each element type (nodes, 
 table:
   geometry:
     node: true|false
-    way: linestring|polygon|centroid|false
-    closed_way: polygon|linestring|centroid
+    way: linestring|centroid|false
+    closed_way: polygon|linestring|centroid|false
     relation: true|false
 ```
 
@@ -727,12 +800,16 @@ Open ways (where first and last nodes are different):
 geometry:
   way: linestring  # Default: linear features (roads, rivers, walls)
   # or
-  way: polygon     # Treat as polygon (rare for open ways)
-  # or
-  way: centroid    # Convert to point at the centroid
+  way: centroid    # Convert open ways to point centroids
   # or
   way: false       # Exclude open ways
 ```
+
+`way` controls **open ways only**. It is independent of `closed_way`: setting
+`way: false` excludes open ways but leaves closed ways governed by `closed_way`.
+
+For open ways, `way: centroid` computes the centroid of the line geometry. It
+does not turn the open way into an area.
 
 ### Closed Way Geometry
 
@@ -745,18 +822,24 @@ geometry:
   closed_way: linestring  # Keep as linear (e.g., circular roads)
   # or
   closed_way: centroid    # Convert to point (e.g., building centroids)
+  # or
+  closed_way: false       # Exclude closed ways
 ```
+
+To emit closed-way polygons while dropping open ways, set `way: false` and
+`closed_way: polygon`. To exclude all ways (e.g. a node-only extract), set both
+`way: false` and `closed_way: false`.
 
 ### Relation Geometry
 
 ```yaml
 geometry:
-  relation: true   # Include relations (multipolygons, routes, etc.)
+  relation: true   # Include multipolygon and boundary relations
   # or
   relation: false  # Exclude relations
 ```
 
-**Note:** Relation geometry support is currently limited in Cosmo. Relations are often ignored even when set to `true`.
+**Note:** Cosmo processes `type=multipolygon` and `type=boundary` relations. Member ways are assembled into polygon rings with correct winding order. Inner rings (holes) are supported. Route relations (`type=route`) are not yet supported.
 
 ### Common Geometry Configurations
 
@@ -785,9 +868,9 @@ geometry:
 ```yaml
 geometry:
   node: false
-  way: polygon
-  closed_way: polygon
-  relation: true # Multipolygon relations
+  way: false          # Open ways cannot form valid polygons
+  closed_way: polygon # Closed ways become polygons
+  relation: true      # Multipolygon relations
 ```
 
 #### Mixed (Transportation Network)
@@ -909,7 +992,7 @@ table:
   filter: "building"
   geometry:
     node: false
-    way: polygon
+    way: false
     closed_way: polygon
     relation: true
   columns:
@@ -1040,12 +1123,12 @@ filter: '!(highway=residential)'
 
 ### Limited Metadata in CEL Context
 
-Only `id`, `version`, and `timestamp` are available in the CEL `meta` variable. Other metadata fields (`uid`, `user`, `changeset`, `visible`) are not included. Use `meta:` column sources instead of CEL expressions for metadata fields if possible.
+Only `id`, `type`, `version`, and `timestamp` are available in the CEL `meta` variable. Other metadata fields (`uid`, `user`, `changeset`, `visible`) are not included. Use `meta:` column sources instead of CEL expressions for metadata fields if possible.
 
 ### Limited String Functions
 
 Cosmo uses `cel-rust` v0.11, which has limited standard library support compared to the full CEL specification. String methods like `.upperAscii()`, `.toLowerCase()`, `.contains()`, `.startsWith()`, etc. may not be available. I have not tested this much.
 
-### Relations Not Fully Supported
+### Relation Limitations
 
-Relation geometry processing is currently limited. Even when `relation: true` is set, relations are often skipped. Relation geometry construction (multipolygons, routes, boundaries) is not yet implemented.
+Only `type=multipolygon` and `type=boundary` relations are processed. Route relations (`type=route`), which would produce line geometries, are not yet supported. Relations referencing ways outside the PBF extract will produce incomplete or missing geometries.

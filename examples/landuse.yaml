@@ -1,0 +1,18 @@
+# Landuse extraction with multipolygon relation support
+
+table:
+  name: landuse
+  filter: "landuse"
+  geometry:
+    node: false
+    way: false
+    closed_way: polygon
+    relation: true
+  columns:
+    - name: name
+      source: tag:name
+    - name: landuse_type
+      source: tag:landuse
+    - name: osmid
+      source: meta:id
+      type: integer

@@ -3,8 +3,10 @@ use memmap2::{Mmap, MmapMut};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::path::Path;
-use tempfile::NamedTempFile;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 // 8 bytes per node: 4 bytes lon (i32), 4 bytes lat (i32)
 // Stored as fixed precision integers (deg * 10^7)
@@ -12,6 +14,7 @@ const NODE_SIZE: usize = 8;
 // 16 bytes per entry: 8 bytes node id (u64), 8 bytes packed coords (i64)
 const SPARSE_ENTRY_SIZE: usize = 16;
 const SCALE_FACTOR: f64 = 10_000_000.0;
+const DENSE_TEMP_PREFIX: &str = "cosmo-dense-node-cache-";
 
 pub struct NodeStoreWriter {
     inner: NodeStoreWriterImpl,
@@ -85,6 +88,12 @@ impl NodeStoreWriter {
     /// The file is NOT automatically deleted - caller is responsible for cleanup.
     pub fn new_dense<P: AsRef<Path>>(path: P, max_nodes: u64) -> Result<Self> {
         let path = path.as_ref();
+        let file_size = dense_cache_file_size(max_nodes, "Dense cache")?;
+        let cache_dir = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        ensure_dense_cache_space(cache_dir, file_size)?;
 
         // Open or create the file
         let file = OpenOptions::new()
@@ -96,15 +105,12 @@ impl NodeStoreWriter {
             .context("NodeStore: Failed to open dense cache file")?;
 
         // Set file length to max size (relying on sparse files)
-        let file_size = max_nodes
-            .checked_mul(NODE_SIZE as u64)
-            .context("NodeStore: Dense cache size overflow")?;
         file.set_len(file_size)
             .context("NodeStore: Failed to set dense cache file length")?;
 
         // Map the file
         // SAFETY: The file handle is exclusively owned by this struct.
-        // The mmap remains valid as long as the file exists (guaranteed by NamedTempFile).
+        // The mmap remains valid as long as the file exists.
         // No other process accesses this file. The mmap is only accessed in single-threaded
         // context during write phase, then converted to read-only before sharing.
         let mmap = unsafe {
@@ -122,15 +128,32 @@ impl NodeStoreWriter {
 
     /// Create a dense node store backed by a temporary memory-mapped file.
     /// The file is automatically deleted when this store (and its reader) are dropped.
+    ///
+    /// Dense caches can be much larger than typical tmpfs-backed `/tmp`, so the
+    /// default directory is selected by `default_dense_temp_dir` rather than
+    /// `std::env::temp_dir`.
     pub fn new_dense_temp(max_nodes: u64) -> Result<Self> {
+        Self::new_dense_temp_in(default_dense_temp_dir(), max_nodes)
+    }
+
+    /// Create a dense node store backed by a temporary memory-mapped file in `dir`.
+    pub fn new_dense_temp_in<P: AsRef<Path>>(dir: P, max_nodes: u64) -> Result<Self> {
+        let dir = dir.as_ref();
+        let file_size = dense_cache_file_size(max_nodes, "Temporary dense cache")?;
+        ensure_dense_cache_space(dir, file_size)?;
+
         // Create temp file
-        let temp_file = NamedTempFile::new()
-            .context("NodeStore: Failed to create temporary dense cache file")?;
+        let temp_file = TempFileBuilder::new()
+            .prefix(DENSE_TEMP_PREFIX)
+            .tempfile_in(dir)
+            .with_context(|| {
+                format!(
+                    "NodeStore: Failed to create temporary dense cache file in {}",
+                    dir.display()
+                )
+            })?;
 
         // Set file length to max size (relying on sparse files)
-        let file_size = max_nodes
-            .checked_mul(NODE_SIZE as u64)
-            .context("NodeStore: Temporary dense cache size overflow")?;
         temp_file
             .as_file()
             .set_len(file_size)
@@ -180,6 +203,86 @@ impl NodeStoreWriter {
             }),
         }
     }
+}
+fn dense_cache_file_size(max_nodes: u64, label: &str) -> Result<u64> {
+    max_nodes
+        .checked_mul(NODE_SIZE as u64)
+        .with_context(|| format!("NodeStore: {label} size overflow"))
+}
+
+fn default_dense_temp_dir() -> PathBuf {
+    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+        if !tmpdir.is_empty() {
+            return PathBuf::from(tmpdir);
+        }
+    }
+    default_dense_temp_dir_for_env(None)
+}
+
+fn default_dense_temp_dir_for_env(explicit_tmpdir: Option<&Path>) -> PathBuf {
+    if let Some(tmpdir) = explicit_tmpdir {
+        return tmpdir.to_path_buf();
+    }
+
+    #[cfg(unix)]
+    {
+        let var_tmp = Path::new("/var/tmp");
+        if var_tmp.is_dir() {
+            return var_tmp.to_path_buf();
+        }
+    }
+
+    std::env::temp_dir()
+}
+
+fn ensure_dense_cache_space(dir: &Path, file_size: u64) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let available = available_bytes(dir)?;
+        if available < file_size {
+            return Err(anyhow!(
+                "NodeStore: not enough free space for dense cache in {}: need {:.1} GiB, available {:.1} GiB; set --node-cache to a path on a larger filesystem or use --node-cache-mode sparse",
+                dir.display(),
+                bytes_to_gib(file_size),
+                bytes_to_gib(available)
+            ));
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (dir, file_size);
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn available_bytes(path: &Path) -> Result<u64> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).with_context(|| {
+        format!(
+            "NodeStore: Failed to inspect free space for {} because path contains NUL",
+            path.display()
+        )
+    })?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "NodeStore: Failed to inspect free space for {}",
+                path.display()
+            )
+        });
+    }
+
+    let stat = unsafe { stat.assume_init() };
+    let bytes = (stat.f_bavail as u128).saturating_mul(stat.f_frsize as u128);
+    Ok(bytes.min(u64::MAX as u128) as u64)
+}
+
+fn bytes_to_gib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
 impl NodeStoreReader {
@@ -606,6 +709,41 @@ mod tests {
     // Dense (mmap) node store tests
     // ============================================
 
+    #[cfg(unix)]
+    #[test]
+    fn dense_temp_dir_prefers_var_tmp_when_tmpdir_is_unset() {
+        if std::path::Path::new("/var/tmp").is_dir() {
+            assert_eq!(
+                default_dense_temp_dir_for_env(None),
+                std::path::PathBuf::from("/var/tmp")
+            );
+        }
+    }
+
+    #[test]
+    fn dense_temp_dir_honors_explicit_tmpdir() {
+        let explicit = std::path::Path::new("/custom/tmp");
+        assert_eq!(default_dense_temp_dir_for_env(Some(explicit)), explicit);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dense_temp_store_rejects_cache_larger_than_available_space() {
+        let temp_dir = tempfile::tempdir_in(default_dense_temp_dir()).unwrap();
+        let available = available_bytes(temp_dir.path()).unwrap();
+        let too_many_nodes = available / NODE_SIZE as u64 + 1;
+
+        let err = match NodeStoreWriter::new_dense_temp_in(temp_dir.path(), too_many_nodes) {
+            Ok(_) => panic!("dense cache larger than available space unexpectedly succeeded"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string().contains("not enough free space"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn dense_temp_store_put_and_get() {
         let mut writer = NodeStoreWriter::new_dense_temp(1000).unwrap();
@@ -696,15 +834,11 @@ mod tests {
 
             assert!(
                 (lat - unpacked_lat).abs() < 1e-7,
-                "lat mismatch: {} vs {}",
-                lat,
-                unpacked_lat
+                "lat mismatch: {lat} vs {unpacked_lat}"
             );
             assert!(
                 (lon - unpacked_lon).abs() < 1e-7,
-                "lon mismatch: {} vs {}",
-                lon,
-                unpacked_lon
+                "lon mismatch: {lon} vs {unpacked_lon}"
             );
         }
     }

@@ -22,6 +22,8 @@ There are many tools that fill the niche "I have OSM data but I want it in anoth
 
 ## Quick Start
 
+> `just` commands are available for some common operations, see [justfile](justfile) for details.
+
 ### Installation
 
 ```bash
@@ -47,7 +49,7 @@ table:
   filter: 'name & (amenity=restaurant|cafe)'
   geometry:
     node: true
-    way: centroid      # Convert building polygons to points
+    way: centroid      # Convert open ways to points
     closed_way: centroid
   columns:
     - name: name
@@ -65,7 +67,7 @@ table:
 
 ### Convert Command
 
-The primary command for converting OSM PBF files:
+Convert and filter an OSM PBF file.
 
 ```bash
 cosmo convert [OPTIONS]
@@ -77,17 +79,19 @@ cosmo convert [OPTIONS]
 |--------|-------|-------------|
 | `--input <PATH>` | `-i` | Input OSM PBF file |
 | `--filters <PATH>` | `-f` | Filter configuration (YAML) |
-| `--output <PATH>` | `-o` | Output file (`.geojson`, `.geojsonl`, `.parquet`) or `-` for stdout (GeoJSONL only) |
+| `--output <PATH>` | `-o` | Output file (`.geojson`, `.geojsonl`, `.parquet`, `.csv`) or `-` for stdout in streaming formats (`geojsonl`, `csv`, `maproulette`) |
 
 #### Common Options
 
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
-| `--format <FORMAT>` | | Override format detection: `geojson`, `geojsonl`, `parquet` | Auto-detect from extension |
+| `--format <FORMAT>` | | Override format detection: `geojson`, `geojsonl`, `geoparquet`/`parquet`, `csv`, `maproulette` | Auto-detect from extension |
 | `--bbox <BBOX>` | | Filter by bounding box: `min_lon,min_lat,max_lon,max_lat` | None |
 | `--all-tags` | | Include all OSM tags as JSON in addition to configured columns | false |
 | `--verbose` | `-v` | Enable detailed logging | false |
 | `--jobs <N>` | `-j` | Parallel processing threads | All CPUs |
+
+`--bbox` filters completed output geometries by intersection. It does not clip geometries, produce smaller PBF extracts, or preserve topology outside the input; use `osmium extract` before Cosmo when you need those guarantees.
 
 #### Node Cache Options
 
@@ -96,16 +100,16 @@ OSM ways reference nodes by ID, so Cosmo needs a way to look up node coordinates
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--node-cache-mode <MODE>` | Cache strategy: `auto`, `sparse`, `dense`, `memory` | `auto` |
-| `--node-cache <PATH>` | Custom cache file path (dense mode only) | Temp file (auto-cleanup) |
-| `--node-cache-max-nodes <N>` | Maximum node ID to allocate space for (dense mode) | 16,000,000,000 |
+| `--node-cache <PATH>` | Custom cache file path (dense mode only) | Temp file in `$TMPDIR` if set, otherwise `/var/tmp` |
+| `--node-cache-max-nodes <N>` | Maximum node ID to allocate address space for (dense mode) | 16,000,000,000 |
 
 **Cache Modes:**
-- **auto** - Automatically selects `sparse` for files <5GB or `dense` for files ≥5GB
+- **auto** - Runs a node ID pre-scan, then selects `memory` for small inputs, `sparse` for sorted sparse ID distributions, or `dense` when direct indexing is smaller or sparse is unavailable. If you're converting a large PBF, set `--node-cache-mode` explicitly to avoid the initial node pre-scan.
 - **sparse** - Sorted array with binary search (O(log n)). Low memory, best for regional extracts with sparse node ID coverage. **Requires sorted input** - PBF files from OSM/GeoFabrik are sorted; use `osmium sort` if unsure
-- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for large files with dense node coverage (planet/continent). Creates a sparse file with ~128GB virtual size that only consumes disk space for nodes actually present
-- **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). For planet processing you'd need 384GB+ RAM
+- **dense** - Direct array indexing by node ID (O(1)). Memory-mapped file using OS sparse file support. Best for dense node ID coverage or unsorted inputs that do not fit memory. Auto mode sizes dense caches from the pre-scanned maximum node ID; explicit dense mode uses `--node-cache-max-nodes`. Use `--node-cache` to place it on a large disk
+- **memory** - In-memory HashMap (O(1)). No disk I/O but high RAM usage (~24+ bytes per node). Auto mode only selects it for inputs with at most 1,000,000 nodes; for planet processing you'd need 384GB+ RAM
 
-**Why these options?** OSM node IDs are globally assigned, so even a small city extract will have IDs scattered across the entire range (10+ billion). For small extracts, sparse mode with binary search is actually faster than dense. For large extracts, dense mode's O(1) lookup wins and uses less disk space. Memory mode is fastest but only practical for smaller extracts or machines with lots of RAM
+**Why these options?** OSM node IDs are globally assigned, so even a small city extract can have IDs scattered across the global range. Auto mode uses real node count, max node ID, and sortedness instead of compressed file size: small inputs avoid disk with memory mode, sorted sparse extracts use compact sparse lookup, and dense ID ranges use O(1) mmap lookup.
 
 #### Example: Extract POIs from a Region
 
@@ -157,6 +161,7 @@ Filters are defined in YAML and consist of:
 | `expr1 \| expr2` | Logical OR | `amenity \| shop` |
 | `key=*pattern*` | Glob matching | `highway=*_link` |
 | `key>=value` | Numeric comparison | `lanes>=2` |
+| `meta:version >= 2`, `meta:timestamp >= "2024-01-01"` | OSM metadata comparison | Matches by version, timestamp, user, uid, changeset, visibility, id, or element type |
 
 **See the [Filter YAML Guide](docs/filter_yaml_guide.md) for complete syntax and examples**
 
@@ -167,16 +172,26 @@ Extract data from OSM features:
 | Source | Description | Example |
 |--------|-------------|---------|
 | `tag:key` | OSM tag value | `source: tag:name` |
-| `meta:field` | Metadata field (id, version, timestamp, uid, user, changeset, visible) | `source: meta:id` |
+| `meta:field` | Metadata field (id, type, version, timestamp, uid, user, changeset, visible) | `source: meta:id` |
 | `tags` | All tags as JSON | `source: tags` (requires `type: json`) |
 | `meta` | All metadata as JSON | `source: meta` (requires `type: json`) |
 | `refs` | Way node IDs as JSON array | `source: refs` (requires `type: json`) |
 | `mapping:name` | Apply categorization mapping | `source: mapping:poi_class` |
+| `const:value` | Literal value typed by the column's `type` | `source: const:buildings-v1` |
 | `expr:CEL` | Compute with CEL expression | `source: 'expr:has(tags.name_en) ? tags.name_en : tags.name'` |
 
 **Column Types:** `string` (default), `integer`, `float`, `json`
 
 **See the [Filter YAML Guide](docs/filter_yaml_guide.md#column-sources) for details and advanced features**
+
+### Spatial Filtering
+
+In addition to tag-based filtering, the `--bbox min_lon,min_lat,max_lon,max_lat` option restricts output to features whose resolved geometry intersects a bounding box (see [Common Options](#common-options)). It filters by intersection only — it does not clip geometries or produce a smaller PBF; use `osmium extract` first when you need a topology-preserving cut.
+
+```bash
+cosmo convert -i utah-latest.osm.pbf -f config.yaml -o pois.geojsonl \
+  --bbox -112.1,40.5,-111.8,40.8
+```
 
 ## Output Formats
 
@@ -192,7 +207,16 @@ cosmo convert -i data.osm.pbf -f config.yaml -o - | tippecanoe
 ### GeoParquet
 Columnar format with spatial metadata. Efficient for large datasets and analytics.
 
-**Note:** Output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+GeoParquet writes only declared columns plus `geometry` by default. When `--all-tags` is enabled, it also writes a `properties` JSON column containing the extra tag payload.
+
+**Note:** GeoParquet output is not spatially sorted. For best performance, sort with DuckDB's Hilbert function. See [CloudNativeGeo best practices](https://cloudnativegeo.org/blog/2025/01/using-duckdbs-hilbert-function-with-geoparquet/).
+
+### CSV
+CSV with declared columns plus a WKT `geometry` column. Supports streaming to stdout (`--output -`).
+
+### MapRoulette
+
+MapRoulette is a platform for creating and managing OSM mapping tasks. Cosmo's `maproulette` format writes RFC 7464 records: each line starts with the record-separator byte and contains a FeatureCollection with one task feature, ready for MapRoulette's [line-by-line GeoJSON](https://learn.maproulette.org/en-US/documentation/line-by-line-geojson/) challenge upload.
 
 ## Documentation
 

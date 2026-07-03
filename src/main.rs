@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {:#}", e);
+            eprintln!("Error: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -98,7 +98,7 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
             table_name,
             table.columns.len(),
             table.geometry.node,
-            table.geometry.way.enabled(),
+            table.geometry.processes_ways(),
             table.geometry.relation
         );
     }
@@ -170,7 +170,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
             table_name,
             table.columns.len(),
             table.geometry.node,
-            table.geometry.way.enabled(),
+            table.geometry.processes_ways(),
             table.geometry.relation
         );
     }
@@ -208,13 +208,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
         .format
         .or_else(|| {
             let ext = args.output.extension()?.to_str()?;
-            match ext.to_lowercase().as_str() {
-                "geojson" => Some(OutputFormat::GeoJson),
-                "geojsonl" | "jsonl" | "json" => Some(OutputFormat::GeoJsonl),
-                "parquet" => Some(OutputFormat::GeoParquet),
-                "csv" => Some(OutputFormat::Csv),
-                _ => None,
-            }
+            OutputFormat::from_extension(ext)
         })
         .context("CLI: Could not detect output format from extension; use --format")?;
 
@@ -226,13 +220,13 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     let sinks = if compiled.tables.len() == 1 {
         // Single table mode: support stdout and file output
         let (table_name, _) = compiled.tables.iter().next().unwrap();
-        let sink = init_sink(&format, &args.output, &compiled)?;
+        let sink = init_sink(&format, &args.output, &compiled, runtime.all_tags)?;
         let mut map = HashMap::new();
         map.insert(table_name.clone(), Arc::new(Mutex::new(sink)));
         map
     } else {
         // Multi-table mode: require directory
-        init_sinks(&format, &args.output, &compiled)?
+        init_sinks(&format, &args.output, &compiled, runtime.all_tags)?
     };
 
     /*
@@ -259,7 +253,7 @@ fn run_convert(args: ConvertArgs, verbose: bool) -> Result<()> {
     for sink in sinks.values() {
         let mut s = sink
             .lock()
-            .map_err(|e| anyhow::anyhow!("Sink lock poisoned: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Sink lock poisoned: {e}"))?;
         s.finish().context("Pipeline: Failed to finalize sink")?;
     }
 

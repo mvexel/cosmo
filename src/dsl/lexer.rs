@@ -1,16 +1,12 @@
 //! Lexer/tokenizer for the filter DSL.
 
-use winnow::ascii::space0;
-use winnow::combinator::alt;
-use winnow::prelude::*;
-use winnow::token::take_while;
-
 /// Token types for the DSL.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Identifiers and values
-    Ident(String), // tag key or value
-    Number(f64),   // numeric literal
+    Ident(String),  // tag key or value
+    Number(f64),    // numeric literal
+    String(String), // quoted string literal
 
     // Operators
     Eq, // =
@@ -34,89 +30,227 @@ pub enum Token {
     Eof,
 }
 
-// Manually define PResult for resilience against winnow version changes
-type PResult<T> = Result<T, winnow::error::ErrMode<winnow::error::ContextError>>;
-
-/// Lex an identifier (tag key or value).
-/// Allowed: alphanumeric, underscore, colon, dash, and wildcard *
-fn lex_ident(input: &mut &str) -> PResult<Token> {
-    let first = take_while(1.., |c: char| {
-        c.is_alphabetic() || c == '_' || c == ':' || c == '*' || c == '-'
-    })
-    .parse_next(input)?;
-    let rest = take_while(0.., |c: char| {
-        c.is_alphanumeric() || c == '_' || c == ':' || c == '-' || c == '*'
-    })
-    .parse_next(input)?;
-
-    let s = format!("{}{}", first, rest);
-    if s == "*" {
-        Ok(Token::Star)
-    } else {
-        Ok(Token::Ident(s))
-    }
-}
-
-/// Lex a number (integer or float).
-fn lex_number(input: &mut &str) -> PResult<Token> {
-    let neg = winnow::combinator::opt('-').parse_next(input)?;
-    let num_str = take_while(1.., |c: char| c.is_ascii_digit() || c == '.').parse_next(input)?;
-    let full = if neg.is_some() {
-        format!("-{}", num_str)
-    } else {
-        num_str.to_string()
-    };
-    let n: f64 = full
-        .parse()
-        .map_err(|_| winnow::error::ErrMode::Backtrack(winnow::error::ContextError::default()))?;
-    Ok(Token::Number(n))
-}
-
-/// Lex a single token.
-fn lex_token(input: &mut &str) -> PResult<Token> {
-    space0.parse_next(input)?;
-
-    if input.is_empty() {
-        return Ok(Token::Eof);
-    }
-
-    alt((
-        // Multi-char operators first
-        "!=".value(Token::Ne),
-        "<=".value(Token::Le),
-        ">=".value(Token::Ge),
-        // Single-char operators
-        "=".value(Token::Eq),
-        "<".value(Token::Lt),
-        ">".value(Token::Gt),
-        "&".value(Token::And),
-        "|".value(Token::Or),
-        "!".value(Token::Not),
-        "(".value(Token::LParen),
-        ")".value(Token::RParen),
-        // Number (before ident to catch negative numbers)
-        lex_number,
-        // Identifier (includes star if part of string)
-        lex_ident,
-    ))
-    .parse_next(input)
-}
-
 /// Tokenize the entire input.
 pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
-    let mut remaining = input;
+    let mut lexer = Lexer::new(input);
     let mut tokens = Vec::new();
 
-    loop {
-        match lex_token(&mut remaining) {
-            Ok(Token::Eof) => break,
-            Ok(tok) => tokens.push(tok),
-            Err(e) => return Err(format!("Lexer error at '{}': {:?}", remaining, e)),
-        }
+    while let Some(token) = lexer.next_token()? {
+        tokens.push(token);
     }
 
     tokens.push(Token::Eof);
     Ok(tokens)
+}
+
+struct Lexer<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> Lexer<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn next_token(&mut self) -> Result<Option<Token>, String> {
+        self.skip_whitespace();
+
+        let Some(ch) = self.peek_char() else {
+            return Ok(None);
+        };
+
+        if let Some(token) = self.operator_token(ch) {
+            return Ok(Some(token));
+        }
+
+        if ch == '"' {
+            return self.lex_string().map(Some);
+        }
+
+        if ch.is_ascii_digit() || self.starts_negative_number() {
+            return self.lex_number().map(Some);
+        }
+
+        if is_ident_start(ch) {
+            return Ok(Some(self.lex_ident()));
+        }
+
+        Err(format!(
+            "Lexer error at '{}': unexpected character '{}'",
+            self.remaining(),
+            ch
+        ))
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn operator_token(&mut self, ch: char) -> Option<Token> {
+        let token = match ch {
+            '!' if self.remaining().starts_with("!=") => {
+                self.pos += 2;
+                Token::Ne
+            }
+            '<' if self.remaining().starts_with("<=") => {
+                self.pos += 2;
+                Token::Le
+            }
+            '>' if self.remaining().starts_with(">=") => {
+                self.pos += 2;
+                Token::Ge
+            }
+            '=' => {
+                self.pos += 1;
+                Token::Eq
+            }
+            '<' => {
+                self.pos += 1;
+                Token::Lt
+            }
+            '>' => {
+                self.pos += 1;
+                Token::Gt
+            }
+            '&' => {
+                self.pos += 1;
+                Token::And
+            }
+            '|' => {
+                self.pos += 1;
+                Token::Or
+            }
+            '!' => {
+                self.pos += 1;
+                Token::Not
+            }
+            '(' => {
+                self.pos += 1;
+                Token::LParen
+            }
+            ')' => {
+                self.pos += 1;
+                Token::RParen
+            }
+            _ => return None,
+        };
+
+        Some(token)
+    }
+
+    fn lex_number(&mut self) -> Result<Token, String> {
+        let start = self.pos;
+
+        if self.peek_char() == Some('-') {
+            self.pos += 1;
+        }
+
+        let mut has_digit = false;
+        let mut has_dot = false;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_ascii_digit() {
+                has_digit = true;
+                self.pos += 1;
+            } else if ch == '.' && !has_dot {
+                has_dot = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+
+        if !has_digit {
+            return Err(format!(
+                "Lexer error at '{}': expected number",
+                &self.input[start..]
+            ));
+        }
+
+        let value = &self.input[start..self.pos];
+        value
+            .parse::<f64>()
+            .map(Token::Number)
+            .map_err(|err| format!("Lexer error at '{value}': invalid number: {err}"))
+    }
+
+    fn lex_string(&mut self) -> Result<Token, String> {
+        self.pos += 1; // opening quote
+        let mut value = String::new();
+
+        while let Some(ch) = self.peek_char() {
+            self.pos += ch.len_utf8();
+            match ch {
+                '"' => return Ok(Token::String(value)),
+                '\\' => {
+                    let Some(escaped) = self.peek_char() else {
+                        return Err("Lexer error: unterminated string literal".to_string());
+                    };
+                    self.pos += escaped.len_utf8();
+                    match escaped {
+                        '"' => value.push('"'),
+                        '\\' => value.push('\\'),
+                        'n' => value.push('\n'),
+                        't' => value.push('\t'),
+                        other => {
+                            return Err(format!(
+                                "Lexer error: unsupported escape sequence '\\{other}'"
+                            ));
+                        }
+                    }
+                }
+                other => value.push(other),
+            }
+        }
+
+        Err("Lexer error: unterminated string literal".to_string())
+    }
+
+    fn lex_ident(&mut self) -> Token {
+        let start = self.pos;
+
+        while let Some(ch) = self.peek_char() {
+            if is_ident_continue(ch) {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        let ident = &self.input[start..self.pos];
+        if ident == "*" {
+            Token::Star
+        } else {
+            Token::Ident(ident.to_string())
+        }
+    }
+
+    fn starts_negative_number(&self) -> bool {
+        let mut chars = self.remaining().chars();
+        matches!(chars.next(), Some('-')) && matches!(chars.next(), Some(ch) if ch.is_ascii_digit())
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.remaining().chars().next()
+    }
+
+    fn remaining(&self) -> &'a str {
+        &self.input[self.pos..]
+    }
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch.is_alphabetic() || ch == '_' || ch == ':' || ch == '*' || ch == '-'
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_' || ch == ':' || ch == '-' || ch == '*'
 }
 
 #[cfg(test)]
@@ -164,6 +298,34 @@ mod tests {
                 Token::Ident("lanes".into()),
                 Token::Ge,
                 Token::Number(2.0),
+                Token::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quoted_string_token() {
+        let tokens = tokenize(r#"meta:user="Jane Doe""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Ident("meta:user".into()),
+                Token::Eq,
+                Token::String("Jane Doe".into()),
+                Token::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_quoted_string_escapes() {
+        let tokens = tokenize(r#"name="Bob \"The Builder\"""#).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Ident("name".into()),
+                Token::Eq,
+                Token::String("Bob \"The Builder\"".into()),
                 Token::Eof,
             ]
         );

@@ -1,8 +1,11 @@
 use crate::dsl::{parse_filter, FilterAst};
 use crate::expr::{compile_cel, CelProgram};
 use crate::mapping::{Mapping, MappingConfig};
-use serde::{Deserialize, Serialize};
+use crate::metadata::MetadataField;
+use anyhow::Context;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -24,10 +27,14 @@ pub struct FiltersConfig {
 
 impl FiltersConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let settings = ::config::Config::builder()
-            .add_source(::config::File::from(path))
-            .build()?;
-        Ok(settings.try_deserialize()?)
+        let file = File::open(path)
+            .with_context(|| format!("failed to open filter configuration {}", path.display()))?;
+        serde_yaml::from_reader(file).with_context(|| {
+            format!(
+                "failed to parse filter configuration {} as YAML",
+                path.display()
+            )
+        })
     }
 
     /// Normalize config to always use multi-table structure
@@ -52,8 +59,7 @@ impl FiltersConfig {
 
             if tables.contains_key(table_name) {
                 anyhow::bail!(
-                    "Duplicate table name '{}' in both 'table:' and 'tables:' syntax",
-                    table_name
+                    "Duplicate table name '{table_name}' in both 'table:' and 'tables:' syntax"
                 );
             }
             tables.insert(table_name.clone(), single_table.clone());
@@ -83,15 +89,19 @@ impl FiltersConfig {
         let mut compiled_tables = HashMap::new();
         for (table_name, table_config) in raw_tables {
             let filter = match &table_config.filter {
-                FilterInput::Dsl(s) => parse_filter(s).map_err(|e| {
-                    anyhow::anyhow!("Filter error in table '{}': {}", table_name, e)
-                })?,
-                FilterInput::Structured(expr) => convert_structured_filter(expr)?,
+                FilterInput::Dsl(s) => parse_filter(s)
+                    .map_err(|e| anyhow::anyhow!("Filter error in table '{table_name}': {e}"))?,
+                FilterInput::EmptyMap(map) if map.is_empty() => FilterAst::True,
+                FilterInput::EmptyMap(_) => {
+                    anyhow::bail!(
+                        "Filter error in table '{table_name}': filter must be a string DSL expression or an empty map"
+                    );
+                }
             };
 
             let mut columns = Vec::new();
             for col in &table_config.columns {
-                let source = parse_column_source(&col.source, &mappings)?;
+                let source = parse_column_source(&col.source, col.col_type, &mappings)?;
                 columns.push(CompiledColumn {
                     name: col.name.clone(),
                     source,
@@ -116,7 +126,7 @@ impl FiltersConfig {
     }
 }
 
-pub const DENSE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+pub const LARGE_INPUT_WARNING_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
 pub const DEFAULT_MAX_NODES: u64 = 16_000_000_000;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -132,7 +142,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             node_cache_mode: NodeCacheMode::Auto,
-            // OSM has ~10.3B nodes as of 2025; use generous headroom to skip prepass scan
+            // Upper bound for explicit dense mode; auto mode sizes dense caches from pre-scan stats.
             node_cache_max_nodes: DEFAULT_MAX_NODES,
             all_tags: false,
             bbox: None,
@@ -143,11 +153,11 @@ impl Default for RuntimeConfig {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeCacheMode {
-    /// Automatically select based on input file size (default)
+    /// Automatically select from node pre-scan stats (default)
     Auto,
-    /// Sorted array - memory-efficient for extracts (<5GB)
+    /// Sorted array - memory-efficient for sorted sparse extracts
     Sparse,
-    /// Direct ID indexing - best for planet/continent (≥5GB)
+    /// Direct ID indexing - best for dense node ID ranges or unsorted input
     Dense,
     /// In-memory HashMap (no disk usage)
     Memory,
@@ -196,13 +206,13 @@ pub struct TableConfig {
 pub enum FilterInput {
     /// DSL string: "highway=primary & lanes>=2"
     Dsl(String),
-    /// Structured filter (backwards compatible)
-    Structured(FilterExpr),
+    /// Documented match-all shorthand: `filter: {}`.
+    EmptyMap(HashMap<String, serde_yaml::Value>),
 }
 
 impl Default for FilterInput {
     fn default() -> Self {
-        FilterInput::Structured(FilterExpr::default())
+        FilterInput::EmptyMap(HashMap::new())
     }
 }
 
@@ -211,18 +221,27 @@ pub struct GeometryConfig {
     #[serde(default)]
     pub way: WaySetting,
     #[serde(default)]
-    pub closed_way: ClosedWayMode,
+    pub closed_way: ClosedWaySetting,
     #[serde(default = "default_true")]
     pub node: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub relation: bool,
+}
+
+impl GeometryConfig {
+    /// True when this table emits any way geometry, i.e. open ways (`way`) or
+    /// closed ways (`closed_way`) are enabled. Used to gate way processing and
+    /// node indexing independently of the open-way setting.
+    pub fn processes_ways(&self) -> bool {
+        self.way.enabled() || self.closed_way.enabled()
+    }
 }
 
 impl Default for GeometryConfig {
     fn default() -> Self {
         Self {
             way: WaySetting::default(),
-            closed_way: ClosedWayMode::Polygon,
+            closed_way: ClosedWaySetting::default(),
             node: true,
             relation: false,
         }
@@ -242,19 +261,99 @@ pub enum ClosedWayMode {
     Linestring,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ClosedWaySetting {
+    Enabled(ClosedWayMode),
+    Disabled,
+}
+
+impl Default for ClosedWaySetting {
+    fn default() -> Self {
+        ClosedWaySetting::Enabled(ClosedWayMode::Polygon)
+    }
+}
+
+impl ClosedWaySetting {
+    pub fn enabled(&self) -> bool {
+        matches!(self, ClosedWaySetting::Enabled(_))
+    }
+
+    pub fn mode(&self) -> ClosedWayMode {
+        match self {
+            ClosedWaySetting::Enabled(mode) => *mode,
+            ClosedWaySetting::Disabled => ClosedWayMode::Polygon,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClosedWaySetting {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl de::Visitor<'_> for Visitor {
+            type Value = ClosedWaySetting;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("one of polygon, centroid, linestring, or false")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value {
+                    Err(E::custom("true is not valid for closed_way; use polygon, centroid, linestring, or false"))
+                } else {
+                    Ok(ClosedWaySetting::Disabled)
+                }
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "polygon" => Ok(ClosedWaySetting::Enabled(ClosedWayMode::Polygon)),
+                    "centroid" => Ok(ClosedWaySetting::Enabled(ClosedWayMode::Centroid)),
+                    "linestring" => Ok(ClosedWaySetting::Enabled(ClosedWayMode::Linestring)),
+                    _ => Err(E::unknown_variant(
+                        value,
+                        &["polygon", "centroid", "linestring"],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl Serialize for ClosedWaySetting {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            ClosedWaySetting::Enabled(mode) => mode.serialize(serializer),
+            ClosedWaySetting::Disabled => serializer.serialize_bool(false),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum WayGeometryMode {
     Linestring,
-    Polygon,
     Centroid,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Copy)]
 pub enum WaySetting {
     Enabled(WayGeometryMode),
-    Disabled(bool),
+    Disabled,
 }
 
 impl Default for WaySetting {
@@ -265,33 +364,69 @@ impl Default for WaySetting {
 
 impl WaySetting {
     pub fn enabled(&self) -> bool {
-        match self {
-            WaySetting::Enabled(_) => true,
-            WaySetting::Disabled(value) => *value,
-        }
+        matches!(self, WaySetting::Enabled(_))
     }
 
     pub fn mode(&self) -> WayGeometryMode {
         match self {
             WaySetting::Enabled(mode) => *mode,
-            WaySetting::Disabled(_) => WayGeometryMode::Linestring,
+            WaySetting::Disabled => WayGeometryMode::Linestring,
         }
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(untagged)]
-pub enum FilterExpr {
-    Tag(TagMatch),
-    Any { any: Vec<FilterExpr> },
-    All { all: Vec<FilterExpr> },
-    Not { not: Box<FilterExpr> },
-    Simple(HashMap<String, String>),
+impl<'de> Deserialize<'de> for WaySetting {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl de::Visitor<'_> for Visitor {
+            type Value = WaySetting;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("one of linestring, centroid, or false")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value {
+                    Err(E::custom(
+                        "true is not valid for way; use linestring, centroid, or false",
+                    ))
+                } else {
+                    Ok(WaySetting::Disabled)
+                }
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "linestring" => Ok(WaySetting::Enabled(WayGeometryMode::Linestring)),
+                    "centroid" => Ok(WaySetting::Enabled(WayGeometryMode::Centroid)),
+                    _ => Err(E::unknown_variant(value, &["linestring", "centroid"])),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
-impl Default for FilterExpr {
-    fn default() -> Self {
-        FilterExpr::Simple(HashMap::new())
+impl Serialize for WaySetting {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            WaySetting::Enabled(mode) => mode.serialize(serializer),
+            WaySetting::Disabled => serializer.serialize_bool(false),
+        }
     }
 }
 
@@ -302,6 +437,43 @@ impl Default for FilterExpr {
 pub struct CompiledConfig {
     pub tables: HashMap<String, CompiledTable>,
     pub mappings: HashMap<String, Mapping>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserMetadataReferences {
+    pub user_name: bool,
+    pub uid: bool,
+}
+
+impl CompiledConfig {
+    pub fn user_metadata_references(&self) -> UserMetadataReferences {
+        let mut usage = UserMetadataReferences::default();
+
+        for table in self.tables.values() {
+            if table.filter.uses_metadata_field(MetadataField::User) {
+                usage.user_name = true;
+            }
+            if table.filter.uses_metadata_field(MetadataField::Uid) {
+                usage.uid = true;
+            }
+            for column in &table.columns {
+                match &column.source {
+                    ColumnSource::Meta(field) => match field.parse::<MetadataField>() {
+                        Ok(MetadataField::User) => usage.user_name = true,
+                        Ok(MetadataField::Uid) => usage.uid = true,
+                        _ => {}
+                    },
+                    ColumnSource::AllMeta => {
+                        usage.user_name = true;
+                        usage.uid = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        usage
+    }
 }
 
 pub struct CompiledTable {
@@ -326,6 +498,10 @@ pub enum ColumnSource {
     AllMeta,
     Refs,
     Mapping(String),
+    ConstString(String),
+    ConstInteger(i64),
+    ConstFloat(f64),
+    ConstJson(serde_json::Value),
     Cel(CelProgram),
 }
 
@@ -336,6 +512,7 @@ pub enum ColumnSource {
 /// Parse a column source string.
 fn parse_column_source(
     source: &str,
+    col_type: ColumnType,
     mappings: &HashMap<String, Mapping>,
 ) -> anyhow::Result<ColumnSource> {
     if source == "tags" {
@@ -351,11 +528,17 @@ fn parse_column_source(
         return Ok(ColumnSource::Tag(tag.to_string()));
     }
     if let Some(field) = source.strip_prefix("meta:") {
+        field
+            .parse::<crate::metadata::MetadataField>()
+            .map_err(anyhow::Error::msg)?;
         return Ok(ColumnSource::Meta(field.to_string()));
+    }
+    if let Some(value) = source.strip_prefix("const:") {
+        return parse_const_column_source(value, col_type);
     }
     if let Some(name) = source.strip_prefix("mapping:") {
         if !mappings.contains_key(name) {
-            return Err(anyhow::anyhow!("Unknown mapping: {}", name));
+            return Err(anyhow::anyhow!("Unknown mapping: {name}"));
         }
         return Ok(ColumnSource::Mapping(name.to_string()));
     }
@@ -368,80 +551,31 @@ fn parse_column_source(
     Ok(ColumnSource::Tag(source.to_string()))
 }
 
-/// Convert old structured FilterExpr to new FilterAst.
-fn convert_structured_filter(expr: &FilterExpr) -> anyhow::Result<FilterAst> {
-    match expr {
-        FilterExpr::Simple(map) if map.is_empty() => Ok(FilterAst::True),
-        FilterExpr::Simple(map) => {
-            let conditions: Vec<FilterAst> = map
-                .iter()
-                .map(|(k, v)| FilterAst::TagMatch {
-                    key: k.clone(),
-                    values: vec![crate::dsl::TagValue::Exact(v.clone())],
-                })
-                .collect();
-            Ok(FilterAst::And(conditions).simplify())
-        }
-        FilterExpr::Tag(tag_match) => {
-            if tag_match.values.is_empty() && tag_match.value.is_none() {
-                Ok(FilterAst::TagExists {
-                    key: tag_match.tag.clone(),
-                    negated: false,
-                })
-            } else {
-                let mut values = Vec::new();
-                if let Some(v) = &tag_match.value {
-                    values.push(crate::dsl::TagValue::Exact(v.clone()));
-                }
-                for v in &tag_match.values {
-                    if v == "*" {
-                        values.push(crate::dsl::TagValue::Any);
-                    } else if v.contains('*') {
-                        values.push(crate::dsl::TagValue::Glob(v.clone()));
-                    } else {
-                        values.push(crate::dsl::TagValue::Exact(v.clone()));
-                    }
-                }
-                Ok(FilterAst::TagMatch {
-                    key: tag_match.tag.clone(),
-                    values,
-                })
-            }
-        }
-        FilterExpr::Any { any } => {
-            let exprs: anyhow::Result<Vec<_>> = any.iter().map(convert_structured_filter).collect();
-            Ok(FilterAst::Or(exprs?).simplify())
-        }
-        FilterExpr::All { all } => {
-            let exprs: anyhow::Result<Vec<_>> = all.iter().map(convert_structured_filter).collect();
-            Ok(FilterAst::And(exprs?).simplify())
-        }
-        FilterExpr::Not { not } => Ok(FilterAst::Not(Box::new(convert_structured_filter(not)?))),
+fn parse_const_column_source(value: &str, col_type: ColumnType) -> anyhow::Result<ColumnSource> {
+    match col_type {
+        ColumnType::String => Ok(ColumnSource::ConstString(value.to_string())),
+        ColumnType::Integer => value
+            .parse::<i64>()
+            .map(ColumnSource::ConstInteger)
+            .with_context(|| format!("Invalid integer const value: {value}")),
+        ColumnType::Float => value
+            .parse::<f64>()
+            .map(ColumnSource::ConstFloat)
+            .with_context(|| format!("Invalid float const value: {value}")),
+        ColumnType::Json => serde_json::from_str(value)
+            .map(ColumnSource::ConstJson)
+            .with_context(|| format!("Invalid JSON const value: {value}")),
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct TagMatch {
-    pub tag: String,
-    #[serde(default)]
-    pub value: Option<String>,
-    #[serde(default)]
-    pub values: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ColumnType {
+    #[default]
     String,
     Integer,
     Float,
     Json,
-}
-
-impl Default for ColumnType {
-    fn default() -> Self {
-        ColumnType::String
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -545,16 +679,15 @@ mod tests {
     }
 
     #[test]
-    fn way_setting_enabled_returns_value_for_disabled() {
-        assert!(!WaySetting::Disabled(false).enabled());
-        assert!(WaySetting::Disabled(true).enabled());
+    fn way_setting_disabled_returns_false() {
+        assert!(!WaySetting::Disabled.enabled());
     }
 
     #[test]
     fn way_setting_mode_returns_correct_mode() {
         assert!(matches!(
-            WaySetting::Enabled(WayGeometryMode::Polygon).mode(),
-            WayGeometryMode::Polygon
+            WaySetting::Enabled(WayGeometryMode::Linestring).mode(),
+            WayGeometryMode::Linestring
         ));
         assert!(matches!(
             WaySetting::Enabled(WayGeometryMode::Centroid).mode(),
@@ -564,7 +697,7 @@ mod tests {
 
     #[test]
     fn way_setting_mode_returns_linestring_for_disabled() {
-        let setting = WaySetting::Disabled(false);
+        let setting = WaySetting::Disabled;
         assert!(matches!(setting.mode(), WayGeometryMode::Linestring));
     }
 
@@ -583,23 +716,10 @@ mod tests {
     fn geometry_config_defaults() {
         let config = GeometryConfig::default();
         assert!(config.way.enabled());
-        assert!(matches!(config.closed_way, ClosedWayMode::Polygon));
+        assert!(config.closed_way.enabled());
+        assert!(matches!(config.closed_way.mode(), ClosedWayMode::Polygon));
         assert!(config.node);
         assert!(!config.relation);
-    }
-
-    // ============================================
-    // FilterExpr default tests
-    // ============================================
-
-    #[test]
-    fn filter_expr_default_is_empty_simple() {
-        let filter = FilterExpr::default();
-        if let FilterExpr::Simple(map) = filter {
-            assert!(map.is_empty());
-        } else {
-            panic!("expected FilterExpr::Simple");
-        }
     }
 
     // ============================================
@@ -618,8 +738,7 @@ mod tests {
         let yaml = r#"
 table:
   name: roads
-  filter:
-    tag: "highway"
+  filter: "highway"
   columns:
     - name: "name"
       source: "tag:name"
@@ -637,145 +756,11 @@ table:
     }
 
     #[test]
-    fn loads_config_with_tag_value_filter() {
-        let yaml = r#"
-table:
-  name: trees
-  filter:
-    tag: "natural"
-    value: "tree"
-  columns:
-    - name: "id"
-      source: "meta:id"
-      type: "integer"
-"#;
-        let file = write_temp_yaml(yaml);
-        let config = FiltersConfig::load(file.path()).unwrap();
-
-        let trees = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::Tag(tag_match)) = &trees.filter {
-            assert_eq!(tag_match.tag, "natural");
-            assert_eq!(tag_match.value, Some("tree".to_string()));
-        } else {
-            panic!("expected FilterExpr::Tag");
-        }
-    }
-
-    #[test]
-    fn loads_config_with_tag_values_filter() {
-        let yaml = r#"
-table:
-  name: amenities
-  filter:
-    tag: "amenity"
-    values:
-      - "cafe"
-      - "restaurant"
-      - "bar"
-  columns:
-    - name: "type"
-      source: "tag:amenity"
-      type: "string"
-"#;
-        let file = write_temp_yaml(yaml);
-        let config = FiltersConfig::load(file.path()).unwrap();
-
-        let amenities = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::Tag(tag_match)) = &amenities.filter {
-            assert_eq!(tag_match.tag, "amenity");
-            assert_eq!(tag_match.values, vec!["cafe", "restaurant", "bar"]);
-        } else {
-            panic!("expected FilterExpr::Tag");
-        }
-    }
-
-    #[test]
-    fn loads_config_with_any_filter() {
-        let yaml = r#"
-table:
-  name: pois
-  filter:
-    any:
-      - tag: "amenity"
-      - tag: "shop"
-  columns:
-    - name: "name"
-      source: "tag:name"
-      type: "string"
-"#;
-        let file = write_temp_yaml(yaml);
-        let config = FiltersConfig::load(file.path()).unwrap();
-
-        let pois = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::Any { any }) = &pois.filter {
-            assert_eq!(any.len(), 2);
-        } else {
-            panic!("expected FilterExpr::Any");
-        }
-    }
-
-    #[test]
-    fn loads_config_with_all_filter() {
-        let yaml = r#"
-table:
-  name: named_roads
-  filter:
-    all:
-      - tag: "highway"
-      - tag: "name"
-  columns:
-    - name: "name"
-      source: "tag:name"
-      type: "string"
-"#;
-        let file = write_temp_yaml(yaml);
-        let config = FiltersConfig::load(file.path()).unwrap();
-
-        let named_roads = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::All { all }) = &named_roads.filter {
-            assert_eq!(all.len(), 2);
-        } else {
-            panic!("expected FilterExpr::All");
-        }
-    }
-
-    #[test]
-    fn loads_config_with_not_filter() {
-        let yaml = r#"
-table:
-  name: non_residential
-  filter:
-    not:
-      tag: "building"
-      value: "residential"
-  columns:
-    - name: "type"
-      source: "tag:building"
-      type: "string"
-"#;
-        let file = write_temp_yaml(yaml);
-        let config = FiltersConfig::load(file.path()).unwrap();
-
-        let non_residential = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::Not { not }) = &non_residential.filter {
-            if let FilterExpr::Tag(tag_match) = not.as_ref() {
-                assert_eq!(tag_match.tag, "building");
-                assert_eq!(tag_match.value, Some("residential".to_string()));
-            } else {
-                panic!("expected inner FilterExpr::Tag");
-            }
-        } else {
-            panic!("expected FilterExpr::Not");
-        }
-    }
-
-    #[test]
     fn loads_config_with_geometry_settings() {
         let yaml = r#"
 table:
   name: roads
-  filter:
-    tag: "highway"
+  filter: "highway"
   geometry:
     node: false
     way: "linestring"
@@ -794,7 +779,7 @@ table:
         assert!(!roads.geometry.relation);
         assert!(roads.geometry.way.enabled());
         assert!(matches!(
-            roads.geometry.closed_way,
+            roads.geometry.closed_way.mode(),
             ClosedWayMode::Linestring
         ));
     }
@@ -804,8 +789,7 @@ table:
         let yaml = r#"
 table:
   name: points
-  filter:
-    tag: "amenity"
+  filter: "amenity"
   geometry:
     node: true
     way: false
@@ -829,8 +813,7 @@ table:
         let yaml = r#"
 table:
   name: roads
-  filter:
-    tag: "highway"
+  filter: "highway"
   columns:
     - name: "id"
       source: "meta:id"
@@ -873,8 +856,7 @@ table:
         let yaml = r#"
 table:
   name: roads
-  filter:
-    tag: "highway"
+  filter: "highway"
 "#;
         let file = write_temp_yaml(yaml);
         let result = FiltersConfig::load(file.path());
@@ -883,34 +865,237 @@ table:
     }
 
     #[test]
-    fn loads_config_with_simple_filter() {
+    fn empty_filter_map_compiles_as_match_all() {
         let yaml = r#"
 table:
-  name: roads
-  filter:
-    highway: "primary"
-  columns:
-    - name: "name"
-      source: "tag:name"
-      type: "string"
+  name: everything
+  filter: {}
+  columns: []
 "#;
         let file = write_temp_yaml(yaml);
         let config = FiltersConfig::load(file.path()).unwrap();
 
-        let roads = config.table.as_ref().unwrap();
-        if let FilterInput::Structured(FilterExpr::Simple(map)) = &roads.filter {
-            assert_eq!(map.get("highway"), Some(&"primary".to_string()));
-        } else {
-            panic!("expected FilterExpr::Simple");
-        }
+        let compiled = config.compile().unwrap();
+        let table = compiled.tables.get("everything").unwrap();
+        assert!(matches!(table.filter, FilterAst::True));
     }
 
-    // ============================================
+    #[test]
+    fn structured_filter_yaml_is_rejected() {
+        let yaml = r#"
+table:
+  name: roads
+  filter:
+    tag: "highway"
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap();
+
+        let err = match config.compile() {
+            Ok(_) => panic!("expected structured filter to be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("filter must be a string DSL expression or an empty map"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn metadata_column_source_rejects_unknown_field() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "amenity"
+  columns:
+    - name: unknown
+      source: "meta:unknown"
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap();
+
+        let err = match config.compile() {
+            Ok(_) => panic!("expected unknown metadata field to be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("Unknown metadata field 'meta:unknown'"));
+        assert!(err.contains("supported fields"));
+    }
+
+    #[test]
+    fn compiled_config_detects_user_metadata_filter_references() {
+        let yaml = r#"
+table:
+  name: edits
+  filter: 'meta:user = "mvexel"'
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+
+        let usage = config.user_metadata_references();
+        assert!(usage.user_name);
+        assert!(!usage.uid);
+    }
+
+    #[test]
+    fn compiled_config_detects_user_metadata_column_references() {
+        let yaml = r#"
+table:
+  name: edits
+  filter: "amenity"
+  columns:
+    - name: uid
+      source: meta:uid
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+
+        let usage = config.user_metadata_references();
+        assert!(!usage.user_name);
+        assert!(usage.uid);
+    }
+
+    #[test]
+    fn const_column_sources_compile_to_typed_values() {
+        let yaml = r#"
+table:
+  name: constants
+  filter: "amenity"
+  columns:
+    - name: source
+      source: const:cosmo
+      type: string
+    - name: count
+      source: const:42
+      type: integer
+    - name: ratio
+      source: const:3.5
+      type: float
+    - name: payload
+      source: 'const:{"kind":"fixed"}'
+      type: json
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap().compile().unwrap();
+        let table = config.tables.get("constants").unwrap();
+
+        assert!(matches!(
+            table.columns[0].source,
+            ColumnSource::ConstString(ref value) if value == "cosmo"
+        ));
+        assert!(matches!(
+            table.columns[1].source,
+            ColumnSource::ConstInteger(42)
+        ));
+        assert!(matches!(
+            table.columns[2].source,
+            ColumnSource::ConstFloat(value) if value == 3.5
+        ));
+        assert!(matches!(
+            table.columns[3].source,
+            ColumnSource::ConstJson(ref value) if value["kind"] == "fixed"
+        ));
+    }
+
+    #[test]
+    fn invalid_const_value_fails_during_compile() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "amenity"
+  columns:
+    - name: count
+      source: const:not-an-int
+      type: integer
+"#;
+        let file = write_temp_yaml(yaml);
+        let err = match FiltersConfig::load(file.path()).unwrap().compile() {
+            Ok(_) => panic!("expected invalid const value to fail"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("Invalid integer const value"));
+    }
+    #[test]
+    fn way_polygon_is_rejected_for_open_ways() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "highway"
+  geometry:
+    way: polygon
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let err = format!("{:#}", FiltersConfig::load(file.path()).unwrap_err());
+        assert!(
+            err.contains("unknown variant `polygon`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn geometry_true_values_are_rejected() {
+        let yaml = r#"
+table:
+  name: invalid
+  filter: "highway"
+  geometry:
+    way: true
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let err = format!("{:#}", FiltersConfig::load(file.path()).unwrap_err());
+        assert!(
+            err.contains("true is not valid for way"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ClosedWayMode default tests
     // ============================================
 
     #[test]
     fn closed_way_mode_default_is_polygon() {
         assert!(matches!(ClosedWayMode::default(), ClosedWayMode::Polygon));
+    }
+
+    #[test]
+    fn closed_way_can_be_disabled() {
+        let yaml = r#"
+table:
+  name: open_only
+  filter: "highway"
+  geometry:
+    way: linestring
+    closed_way: false
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap();
+        let table = config.table.as_ref().unwrap();
+        assert!(!table.geometry.closed_way.enabled());
+        assert!(table.geometry.processes_ways());
+    }
+
+    #[test]
+    fn closed_way_polygon_with_disabled_open_way_still_processes() {
+        let yaml = r#"
+table:
+  name: polygons
+  filter: "landuse"
+  geometry:
+    way: false
+    closed_way: polygon
+  columns: []
+"#;
+        let file = write_temp_yaml(yaml);
+        let config = FiltersConfig::load(file.path()).unwrap();
+        let table = config.table.as_ref().unwrap();
+        assert!(!table.geometry.way.enabled());
+        assert!(table.geometry.closed_way.enabled());
+        assert!(table.geometry.processes_ways());
     }
 }
