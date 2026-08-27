@@ -1,3 +1,5 @@
+**Cosmo is now hosted on Gitlab because I do not know if it complies with [Codeberg's ToU](https://codeberg.org/Codeberg/org/src/branch/main/TermsOfUse.md)** The codeberg repo will be deleted on 2026-10-01.
+
 ```
      ______   ______   ______   ___ __ __   ______      
     /_____/\ /_____/\ /_____/\ /__//_//_/\ /_____/\     
